@@ -66,15 +66,21 @@ def fmt_dubai(iso_str: str, fmt: str = "%m/%d %H:%M") -> str:
 # Default configuration
 # ─────────────────────────────────────────────────────────────────────────────
 DEFAULT_CONFIG: dict = {
-    "tp_pct":             1.5,
-    "sl_pct":             3.0,
-    "rsi_5m_min":         30,
-    "resistance_tol_pct": 1.5,
-    "rsi_1h_min":         30,
-    "rsi_1h_max":         95,
-    "loop_minutes":       5,
-    "cooldown_minutes":   5,
-    "use_ema_3m":         False,
+    "tp_pct":               1.5,
+    "sl_pct":               3.0,
+    # ── per-filter enable/disable ──────────────────────────────────────────────
+    "use_pre_filter":       True,   # Bulk ticker pre-filter (volume / change / low)
+    "use_rsi_5m":           True,   # F4 — 5m RSI
+    "rsi_5m_min":           30,
+    "use_resistance_5m":    True,   # F5 — 5m swing-high resistance
+    "use_resistance_15m":   True,   # F6 — 15m swing-high resistance
+    "resistance_tol_pct":   1.5,
+    "use_rsi_1h":           True,   # F7 — 1h RSI
+    "rsi_1h_min":           30,
+    "rsi_1h_max":           95,
+    "loop_minutes":         5,
+    "cooldown_minutes":     5,
+    "use_ema_3m":           False,
     "ema_period_3m":      12,
     "use_ema_5m":         True,
     "ema_period_5m":      12,
@@ -234,10 +240,45 @@ def save_config(cfg: dict):
     with _config_lock:
         CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
+def _migrate_criteria(crit: dict) -> dict:
+    """
+    Convert old-format criteria that stored "✅"/"—" into the new per-timeframe
+    numeric keys.  Values that were "✅" become None (no data available) so the
+    UI shows "—" instead of a stale tick mark.
+    """
+    if not crit:
+        return crit
+    # Migrate flat MACD/SAR/Vol keys → per-timeframe keys
+    if "macd" in crit and "macd_3m" not in crit:
+        v = crit.pop("macd")
+        crit["macd_3m"]  = None if v == "✅" else v
+        crit["macd_5m"]  = None
+        crit["macd_15m"] = None
+    if "sar" in crit and "sar_3m" not in crit:
+        v = crit.pop("sar")
+        crit["sar_3m"]  = None if v == "✅" else v
+        crit["sar_5m"]  = None
+        crit["sar_15m"] = None
+    if "vol" in crit and "vol_ratio" not in crit:
+        v = crit.pop("vol")
+        crit["vol_ratio"] = None if v == "✅" else v
+    # EMA: if stored as "✅" we have no actual value — set to None
+    for key in ("ema_3m", "ema_5m", "ema_15m"):
+        if crit.get(key) == "✅":
+            crit[key] = None
+    return crit
+
 def load_log():
     if LOG_FILE.exists():
-        try: return json.loads(LOG_FILE.read_text(encoding="utf-8"))
-        except Exception: pass
+        try:
+            data = json.loads(LOG_FILE.read_text(encoding="utf-8"))
+            # Migrate any pre-update signals transparently
+            for sig in data.get("signals", []):
+                if "criteria" in sig:
+                    sig["criteria"] = _migrate_criteria(sig["criteria"])
+            return data
+        except Exception:
+            pass
     return {"health": {"total_cycles": 0, "last_scan_at": None,
                         "last_scan_duration_s": 0.0, "total_api_errors": 0,
                         "watchlist_size": 0, "pre_filtered_out": 0,
@@ -580,11 +621,12 @@ def process(sym, cfg: dict):
         tol         = cfg["resistance_tol_pct"] / 100
 
         rsi5_q = (calc_rsi_series(closes_5m_q) or [0])[-1]
-        if rsi5_q < cfg["rsi_5m_min"]:
+        if cfg.get("use_rsi_5m", True) and rsi5_q < cfg["rsi_5m_min"]:
             with _filter_lock: _filter_counts["f4_rsi5m"] = _filter_counts.get("f4_rsi5m",0)+1
             return None
 
-        if is_near_resistance(entry_q, find_swing_highs(m5_quick[-25:], 2), tol):
+        if cfg.get("use_resistance_5m", True) and \
+                is_near_resistance(entry_q, find_swing_highs(m5_quick[-25:], 2), tol):
             with _filter_lock: _filter_counts["f5_res5m"] = _filter_counts.get("f5_res5m",0)+1
             return None
 
@@ -611,18 +653,21 @@ def process(sym, cfg: dict):
         entry      = round(m5[-1]["close"], 6)
 
         # ── F5: 5m resistance (full data) ─────────────────────────────────────
-        if is_near_resistance(entry, find_swing_highs(m5[-25:], 2), tol):
+        if cfg.get("use_resistance_5m", True) and \
+                is_near_resistance(entry, find_swing_highs(m5[-25:], 2), tol):
             with _filter_lock: _filter_counts["f5_res5m"] = _filter_counts.get("f5_res5m",0)+1
             return None
 
         # ── F6: 15m resistance ────────────────────────────────────────────────
-        if is_near_resistance(entry, find_swing_highs(m15[-25:], 2), tol):
+        if cfg.get("use_resistance_15m", True) and \
+                is_near_resistance(entry, find_swing_highs(m15[-25:], 2), tol):
             with _filter_lock: _filter_counts["f6_res15m"] = _filter_counts.get("f6_res15m",0)+1
             return None
 
         # ── F7: 1h RSI ────────────────────────────────────────────────────────
         rsi1h = (calc_rsi_series(closes_1h) or [0])[-1]
-        if not (cfg["rsi_1h_min"] <= rsi1h <= cfg["rsi_1h_max"]):
+        if cfg.get("use_rsi_1h", True) and \
+                not (cfg["rsi_1h_min"] <= rsi1h <= cfg["rsi_1h_max"]):
             with _filter_lock: _filter_counts["f7_rsi1h"] = _filter_counts.get("f7_rsi1h",0)+1
             return None
 
@@ -748,14 +793,17 @@ def scan(cfg: dict):
         _filter_counts["total_watchlist"] = len(symbols)
 
     # A — bulk ticker pre-filter (1 API call → eliminates ~70 % of coins)
-    tickers      = get_bulk_tickers()
-    pre_filtered = pre_filter_by_ticker(symbols, tickers)
+    tickers = get_bulk_tickers()
+    if cfg.get("use_pre_filter", True):
+        pre_filtered = pre_filter_by_ticker(symbols, tickers)
+    else:
+        pre_filtered = list(symbols)   # pre-filter disabled — deep-scan all
     with _filter_lock:
         _filter_counts["pre_filtered_out"] = len(symbols) - len(pre_filtered)
 
     print(f"[Scan] {len(symbols)} valid symbols → "
           f"{len(pre_filtered)} after bulk pre-filter "
-          f"({_filter_counts['pre_filtered_out']} removed)")
+          f"({'disabled' if not cfg.get('use_pre_filter', True) else _filter_counts['pre_filtered_out']} removed)")
 
     results = []
     # 6 outer workers (reduced from 8 to stay safely under rate limit with inner parallel fetches)
@@ -873,18 +921,51 @@ with st.sidebar:
     new_sl = c2.number_input("SL %", min_value=0.1, max_value=20.0, step=0.1, value=float(_snap_cfg["sl_pct"]),    key="cfg_sl")
     st.divider()
 
-    st.markdown("**📈 F4/F7 — RSI**")
-    new_rsi5_min  = st.number_input("5m RSI min", min_value=0, max_value=100, step=1, value=int(_snap_cfg["rsi_5m_min"]),  key="cfg_rsi5")
-    c3, c4 = st.columns(2)
-    new_rsi1h_min = c3.number_input("1h min", min_value=0, max_value=100, step=1, value=int(_snap_cfg["rsi_1h_min"]), key="cfg_rsi1h_min")
-    new_rsi1h_max = c4.number_input("1h max", min_value=0, max_value=100, step=1, value=int(_snap_cfg["rsi_1h_max"]), key="cfg_rsi1h_max")
+    # ── Pre-filter ──────────────────────────────────────────────────────────────
+    new_use_pre_filter = st.checkbox(
+        "⚡ Enable Bulk Pre-filter",
+        value=bool(_snap_cfg.get("use_pre_filter", True)), key="cfg_use_pre_filter",
+        help="One API call eliminates coins with low volume, big red candle, or near 24h low. "
+             "Disable only to deep-scan ALL watchlist coins (much slower).")
+    if new_use_pre_filter:
+        st.caption("✅ Vol ≥ 500k · Change ≥ −3% · Price ≥ Low × 1.005")
     st.divider()
 
-    st.markdown("**🚧 F5/F6 — Resistance**")
+    # ── F4: 5m RSI ─────────────────────────────────────────────────────────────
+    new_use_rsi_5m = st.checkbox("📈 Enable F4 — 5m RSI",
+                                  value=bool(_snap_cfg.get("use_rsi_5m", True)), key="cfg_use_rsi_5m")
+    new_rsi5_min = st.number_input("5m RSI min", min_value=0, max_value=100, step=1,
+                                    value=int(_snap_cfg["rsi_5m_min"]), key="cfg_rsi5",
+                                    disabled=not new_use_rsi_5m)
+    st.divider()
+
+    # ── F5/F6: Resistance ───────────────────────────────────────────────────────
+    st.markdown("**🚧 Resistance Filters**")
+    r1, r2 = st.columns(2)
+    new_use_resistance_5m  = r1.checkbox("F5 — 5m Res",
+                                          value=bool(_snap_cfg.get("use_resistance_5m", True)),
+                                          key="cfg_use_res5m")
+    new_use_resistance_15m = r2.checkbox("F6 — 15m Res",
+                                          value=bool(_snap_cfg.get("use_resistance_15m", True)),
+                                          key="cfg_use_res15m")
     new_res_tol = st.number_input("Tolerance % above entry", min_value=0.1, max_value=10.0, step=0.1,
-                                   value=float(_snap_cfg["resistance_tol_pct"]), key="cfg_res")
+                                   value=float(_snap_cfg["resistance_tol_pct"]), key="cfg_res",
+                                   disabled=not (new_use_resistance_5m or new_use_resistance_15m))
     st.divider()
 
+    # ── F7: 1h RSI ─────────────────────────────────────────────────────────────
+    new_use_rsi_1h = st.checkbox("📈 Enable F7 — 1h RSI",
+                                  value=bool(_snap_cfg.get("use_rsi_1h", True)), key="cfg_use_rsi_1h")
+    c3, c4 = st.columns(2)
+    new_rsi1h_min = c3.number_input("1h min", min_value=0, max_value=100, step=1,
+                                     value=int(_snap_cfg["rsi_1h_min"]), key="cfg_rsi1h_min",
+                                     disabled=not new_use_rsi_1h)
+    new_rsi1h_max = c4.number_input("1h max", min_value=0, max_value=100, step=1,
+                                     value=int(_snap_cfg["rsi_1h_max"]), key="cfg_rsi1h_max",
+                                     disabled=not new_use_rsi_1h)
+    st.divider()
+
+    # ── EMA_Selection ──────────────────────────────────────────────────────────
     st.markdown("**📉 EMA_Selection** (price must be above EMA)")
     ea1, ea2 = st.columns([1,2])
     new_use_ema_3m    = ea1.checkbox("3m EMA", value=bool(_snap_cfg.get("use_ema_3m",False)), key="cfg_use_ema_3m")
@@ -903,17 +984,20 @@ with st.sidebar:
                                           label_visibility="collapsed")
     st.divider()
 
+    # ── F9: MACD ───────────────────────────────────────────────────────────────
     st.markdown("**📊 F9 — MACD** (dark 🟢 histogram, 3m·5m·15m)")
     new_use_macd = st.checkbox("Enable MACD filter", value=bool(_snap_cfg.get("use_macd",True)), key="cfg_use_macd",
         help="MACD>0, Signal>0, Histogram>0 AND increasing (dark green only), crossover within 12 candles — on 3m·5m·15m")
     if new_use_macd: st.caption("✅ MACD>0 · Signal>0 · Histogram 🟢↑ · Crossover ↑")
     st.divider()
 
+    # ── F10: SAR ───────────────────────────────────────────────────────────────
     st.markdown("**🪂 F10 — Parabolic SAR** (3m·5m·15m)")
     new_use_sar = st.checkbox("Enable SAR filter", value=bool(_snap_cfg.get("use_sar",True)), key="cfg_use_sar")
     if new_use_sar: st.caption("✅ SAR below price on 3m · 5m · 15m")
     st.divider()
 
+    # ── F11: Volume Spike ──────────────────────────────────────────────────────
     st.markdown("**📦 F11 — Volume Spike** (15m)")
     new_use_vol_spike = st.checkbox("Enable vol spike", value=bool(_snap_cfg.get("use_vol_spike",False)), key="cfg_use_vol_spike")
     vx1, vx2 = st.columns(2)
@@ -977,6 +1061,13 @@ with st.sidebar:
         new_wl = [s.strip().upper() for s in wl_text.splitlines() if s.strip()]
         new_cfg = {
             "tp_pct": new_tp, "sl_pct": new_sl,
+            # enable/disable flags
+            "use_pre_filter":      bool(new_use_pre_filter),
+            "use_rsi_5m":          bool(new_use_rsi_5m),
+            "use_resistance_5m":   bool(new_use_resistance_5m),
+            "use_resistance_15m":  bool(new_use_resistance_15m),
+            "use_rsi_1h":          bool(new_use_rsi_1h),
+            # filter parameters
             "rsi_5m_min": int(new_rsi5_min), "resistance_tol_pct": new_res_tol,
             "rsi_1h_min": int(new_rsi1h_min), "rsi_1h_max": int(new_rsi1h_max),
             "loop_minutes": int(new_loop), "cooldown_minutes": int(new_cool),
@@ -1074,7 +1165,7 @@ if filtered_sorted:
         crit        = s.get("criteria",{})
         def _cv(v):
             """Format a criteria value: show number if numeric, else show as-is."""
-            if v is None or v == "—": return "—"
+            if v is None or v == "—" or v == "✅": return "—"
             try: return f"{float(v):.6f}".rstrip("0").rstrip(".")
             except (TypeError, ValueError): return str(v)
         crit_str    = (
@@ -1083,13 +1174,13 @@ if filtered_sorted:
             f"• EMA 3m    : {_cv(crit.get('ema_3m','—'))}\n"
             f"• EMA 5m    : {_cv(crit.get('ema_5m','—'))}\n"
             f"• EMA 15m   : {_cv(crit.get('ema_15m','—'))}\n"
-            f"• MACD 3m   : {_cv(crit.get('macd_3m', crit.get('macd','—')))}\n"
-            f"• MACD 5m   : {_cv(crit.get('macd_5m','—'))}\n"
-            f"• MACD 15m  : {_cv(crit.get('macd_15m','—'))}\n"
-            f"• SAR 3m    : {_cv(crit.get('sar_3m', crit.get('sar','—')))}\n"
-            f"• SAR 5m    : {_cv(crit.get('sar_5m','—'))}\n"
-            f"• SAR 15m   : {_cv(crit.get('sar_15m','—'))}\n"
-            f"• Vol ×avg  : {_cv(crit.get('vol_ratio', crit.get('vol','—')))}"
+            f"• MACD 3m   : {_cv(crit.get('macd_3m'))}\n"
+            f"• MACD 5m   : {_cv(crit.get('macd_5m'))}\n"
+            f"• MACD 15m  : {_cv(crit.get('macd_15m'))}\n"
+            f"• SAR 3m    : {_cv(crit.get('sar_3m'))}\n"
+            f"• SAR 5m    : {_cv(crit.get('sar_5m'))}\n"
+            f"• SAR 15m   : {_cv(crit.get('sar_15m'))}\n"
+            f"• Vol ×avg  : {_cv(crit.get('vol_ratio'))}"
         ) if crit else "—"
         max_lev   = s.get("max_lev", get_max_leverage(s.get("symbol","")))
         sl_reason = analyze_sl_reason(s) if status=="sl_hit" else "—"
@@ -1178,6 +1269,15 @@ if fc.get("total_watchlist", 0) > 0:
         after_f9  = after_f8  - fc.get("f9_macd",0)
         after_f10 = after_f9  - fc.get("f10_sar",0)
 
+        def _lbl(enabled, on_str, off_str="off"):
+            return on_str if enabled else f"{on_str.split('—')[0].strip()} ({off_str})"
+
+        pre_lbl  = "⚡ After Bulk Pre-filter" if _snap_cfg.get("use_pre_filter", True) else "⚡ Pre-filter (disabled)"
+        f4_lbl   = f"F4 — 5m RSI ≥{_snap_cfg.get('rsi_5m_min',30)}" if _snap_cfg.get("use_rsi_5m", True) else "F4 — 5m RSI (off)"
+        f5_lbl   = "F5 — 5m Resistance" if _snap_cfg.get("use_resistance_5m", True) else "F5 — 5m Resistance (off)"
+        f6_lbl   = "F6 — 15m Resistance" if _snap_cfg.get("use_resistance_15m", True) else "F6 — 15m Resistance (off)"
+        f7_lbl   = (f"F7 — 1h RSI {_snap_cfg.get('rsi_1h_min',30)}–{_snap_cfg.get('rsi_1h_max',95)}"
+                    if _snap_cfg.get("use_rsi_1h", True) else "F7 — 1h RSI (off)")
         ema_parts = []
         if _snap_cfg.get("use_ema_3m"):  ema_parts.append(f"3m EMA{_snap_cfg.get('ema_period_3m',12)}")
         if _snap_cfg.get("use_ema_5m"):  ema_parts.append(f"5m EMA{_snap_cfg.get('ema_period_5m',12)}")
@@ -1189,17 +1289,17 @@ if fc.get("total_watchlist", 0) > 0:
                     if _snap_cfg.get("use_vol_spike") else "F11 Vol (off)")
 
         funnel_data = [
-            (f"Watchlist ({total})",              total),
-            (f"⚡ After Bulk Pre-filter",          after_pre),
-            (f"Entered Deep Scan",                checked),
-            ("After F4 — 5m RSI",                 after_f4),
-            ("After F5 — 5m Resistance",          after_f5),
-            ("After F6 — 15m Resistance",         after_f6),
-            ("After F7 — 1h RSI",                 after_f7),
-            (f"After {ema_lbl}",                   after_f8),
-            (f"After {macd_lbl}",                 after_f9),
-            (f"After {sar_lbl}",                  after_f10),
-            (f"After {vol_lbl}",                  fc.get("passed",0)),
+            (f"Watchlist ({total})",  total),
+            (pre_lbl,                 after_pre),
+            ("Entered Deep Scan",     checked),
+            (f"After {f4_lbl}",       after_f4),
+            (f"After {f5_lbl}",       after_f5),
+            (f"After {f6_lbl}",       after_f6),
+            (f"After {f7_lbl}",       after_f7),
+            (f"After {ema_lbl}",      after_f8),
+            (f"After {macd_lbl}",     after_f9),
+            (f"After {sar_lbl}",      after_f10),
+            (f"After {vol_lbl}",      fc.get("passed",0)),
         ]
         fig_funnel = go.Figure(go.Funnel(
             y=[d[0] for d in funnel_data],
