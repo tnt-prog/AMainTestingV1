@@ -75,11 +75,11 @@ DEFAULT_CONFIG: dict = {
     "loop_minutes":       5,
     "cooldown_minutes":   5,
     "use_ema_3m":         False,
-    "ema_period_3m":      200,
+    "ema_period_3m":      12,
     "use_ema_5m":         True,
-    "ema_period_5m":      200,
+    "ema_period_5m":      12,
     "use_ema_15m":        True,
-    "ema_period_15m":     200,
+    "ema_period_15m":     12,
     "use_macd":           True,
     "use_sar":            True,
     "use_vol_spike":      False,
@@ -589,7 +589,7 @@ def process(sym, cfg: dict):
             return None
 
         # ── B — Stage 2: Fetch all 4 timeframes IN PARALLEL (3 API calls saved)
-        # 5m full needed for EMA(200); 1h needs only 19 candles
+        # 5m full needed for EMA (configurable period); 1h needs only 19 candles
         candle_limit_5m  = 210 if (cfg.get("use_ema_5m") or cfg.get("use_macd") or cfg.get("use_sar")) else 50
         candle_limit_15m = 210 if (cfg.get("use_ema_15m")or cfg.get("use_macd") or cfg.get("use_sar")) else 50
         candle_limit_3m  =  80 if (cfg.get("use_ema_3m") or cfg.get("use_macd") or cfg.get("use_sar")) else 30
@@ -628,17 +628,17 @@ def process(sym, cfg: dict):
 
         # ── F8: EMA ───────────────────────────────────────────────────────────
         if cfg.get("use_ema_3m"):
-            ema = calc_ema(closes_3m, max(2, int(cfg.get("ema_period_3m", 200))))
+            ema = calc_ema(closes_3m, max(2, int(cfg.get("ema_period_3m", 12))))
             if not ema or entry < ema[-1]:
                 with _filter_lock: _filter_counts["f8_ema"] = _filter_counts.get("f8_ema",0)+1
                 return None
         if cfg.get("use_ema_5m"):
-            ema = calc_ema(closes_5m, max(2, int(cfg.get("ema_period_5m", 200))))
+            ema = calc_ema(closes_5m, max(2, int(cfg.get("ema_period_5m", 12))))
             if not ema or entry < ema[-1]:
                 with _filter_lock: _filter_counts["f8_ema"] = _filter_counts.get("f8_ema",0)+1
                 return None
         if cfg.get("use_ema_15m"):
-            ema = calc_ema(closes_15m, max(2, int(cfg.get("ema_period_15m", 200))))
+            ema = calc_ema(closes_15m, max(2, int(cfg.get("ema_period_15m", 12))))
             if not ema or entry < ema[-1]:
                 with _filter_lock: _filter_counts["f8_ema"] = _filter_counts.get("f8_ema",0)+1
                 return None
@@ -848,36 +848,36 @@ with st.sidebar:
 
     st.markdown("**📊 Trade Settings**")
     c1, c2 = st.columns(2)
-    new_tp = c1.number_input("TP %", 0.1, 20.0, 0.1, value=float(_snap_cfg["tp_pct"]),    key="cfg_tp")
-    new_sl = c2.number_input("SL %", 0.1, 20.0, 0.1, value=float(_snap_cfg["sl_pct"]),    key="cfg_sl")
+    new_tp = c1.number_input("TP %", min_value=0.1, max_value=20.0, step=0.1, value=float(_snap_cfg["tp_pct"]),    key="cfg_tp")
+    new_sl = c2.number_input("SL %", min_value=0.1, max_value=20.0, step=0.1, value=float(_snap_cfg["sl_pct"]),    key="cfg_sl")
     st.divider()
 
     st.markdown("**📈 F4/F7 — RSI**")
-    new_rsi5_min  = st.number_input("5m RSI min", 0, 100, 1, value=int(_snap_cfg["rsi_5m_min"]),  key="cfg_rsi5")
+    new_rsi5_min  = st.number_input("5m RSI min", min_value=0, max_value=100, step=1, value=int(_snap_cfg["rsi_5m_min"]),  key="cfg_rsi5")
     c3, c4 = st.columns(2)
-    new_rsi1h_min = c3.number_input("1h min", 0, 100, 1, value=int(_snap_cfg["rsi_1h_min"]), key="cfg_rsi1h_min")
-    new_rsi1h_max = c4.number_input("1h max", 0, 100, 1, value=int(_snap_cfg["rsi_1h_max"]), key="cfg_rsi1h_max")
+    new_rsi1h_min = c3.number_input("1h min", min_value=0, max_value=100, step=1, value=int(_snap_cfg["rsi_1h_min"]), key="cfg_rsi1h_min")
+    new_rsi1h_max = c4.number_input("1h max", min_value=0, max_value=100, step=1, value=int(_snap_cfg["rsi_1h_max"]), key="cfg_rsi1h_max")
     st.divider()
 
     st.markdown("**🚧 F5/F6 — Resistance**")
-    new_res_tol = st.number_input("Tolerance % above entry", 0.1, 10.0, 0.1,
+    new_res_tol = st.number_input("Tolerance % above entry", min_value=0.1, max_value=10.0, step=0.1,
                                    value=float(_snap_cfg["resistance_tol_pct"]), key="cfg_res")
     st.divider()
 
-    st.markdown("**📉 F8 — EMA Filter**")
+    st.markdown("**📉 EMA_Selection** (price must be above EMA)")
     ea1, ea2 = st.columns([1,2])
     new_use_ema_3m    = ea1.checkbox("3m EMA", value=bool(_snap_cfg.get("use_ema_3m",False)), key="cfg_use_ema_3m")
-    new_ema_period_3m = ea2.number_input("P##3m", 2, 500, 1, value=int(_snap_cfg.get("ema_period_3m",200)),
+    new_ema_period_3m = ea2.number_input("P##3m", min_value=2, max_value=500, step=1, value=int(_snap_cfg.get("ema_period_3m",12)),
                                          key="cfg_ema_period_3m", disabled=not new_use_ema_3m,
                                          label_visibility="collapsed")
     eb1, eb2 = st.columns([1,2])
     new_use_ema_5m    = eb1.checkbox("5m EMA", value=bool(_snap_cfg.get("use_ema_5m",True)),  key="cfg_use_ema_5m")
-    new_ema_period_5m = eb2.number_input("P##5m", 2, 500, 1, value=int(_snap_cfg.get("ema_period_5m",200)),
+    new_ema_period_5m = eb2.number_input("P##5m", min_value=2, max_value=500, step=1, value=int(_snap_cfg.get("ema_period_5m",12)),
                                          key="cfg_ema_period_5m", disabled=not new_use_ema_5m,
                                          label_visibility="collapsed")
     ec1, ec2 = st.columns([1,2])
     new_use_ema_15m    = ec1.checkbox("15m EMA", value=bool(_snap_cfg.get("use_ema_15m",True)), key="cfg_use_ema_15m")
-    new_ema_period_15m = ec2.number_input("P##15m", 2, 500, 1, value=int(_snap_cfg.get("ema_period_15m",200)),
+    new_ema_period_15m = ec2.number_input("P##15m", min_value=2, max_value=500, step=1, value=int(_snap_cfg.get("ema_period_15m",12)),
                                           key="cfg_ema_period_15m", disabled=not new_use_ema_15m,
                                           label_visibility="collapsed")
     st.divider()
@@ -896,18 +896,18 @@ with st.sidebar:
     st.markdown("**📦 F11 — Volume Spike** (15m)")
     new_use_vol_spike = st.checkbox("Enable vol spike", value=bool(_snap_cfg.get("use_vol_spike",False)), key="cfg_use_vol_spike")
     vx1, vx2 = st.columns(2)
-    new_vol_mult     = vx1.number_input("Mult (X×)", 1.0, 20.0, 0.5,
+    new_vol_mult     = vx1.number_input("Mult (X×)", min_value=1.0, max_value=20.0, step=0.5,
                                          value=float(_snap_cfg.get("vol_spike_mult",2.0)), key="cfg_vol_mult",
                                          disabled=not new_use_vol_spike)
-    new_vol_lookback = vx2.number_input("Lookback (N)", 2, 100, 1,
+    new_vol_lookback = vx2.number_input("Lookback (N)", min_value=2, max_value=100, step=1,
                                          value=int(_snap_cfg.get("vol_spike_lookback",20)), key="cfg_vol_lookback",
                                          disabled=not new_use_vol_spike)
     st.divider()
 
     st.markdown("**⏱ Execution**")
     c5, c6 = st.columns(2)
-    new_loop = c5.number_input("Loop (min)", 1, 60, 1, value=int(_snap_cfg["loop_minutes"]),    key="cfg_loop")
-    new_cool = c6.number_input("Cooldown (min)", 1, 120, 1, value=int(_snap_cfg["cooldown_minutes"]), key="cfg_cool")
+    new_loop = c5.number_input("Loop (min)", min_value=1, max_value=60, step=1, value=int(_snap_cfg["loop_minutes"]),    key="cfg_loop")
+    new_cool = c6.number_input("Cooldown (min)", min_value=1, max_value=120, step=1, value=int(_snap_cfg["cooldown_minutes"]), key="cfg_cool")
     st.divider()
 
     st.markdown("**📋 Watchlist** (one symbol per line)")
@@ -1015,9 +1015,9 @@ st.divider()
 
 # ── Active filter badges ───────────────────────────────────────────────────────
 badges = []
-if _snap_cfg.get("use_ema_3m"):    badges.append(f"📉 EMA{_snap_cfg.get('ema_period_3m',200)} 3m")
-if _snap_cfg.get("use_ema_5m"):    badges.append(f"📉 EMA{_snap_cfg.get('ema_period_5m',200)} 5m")
-if _snap_cfg.get("use_ema_15m"):   badges.append(f"📉 EMA{_snap_cfg.get('ema_period_15m',200)} 15m")
+if _snap_cfg.get("use_ema_3m"):    badges.append(f"📉 EMA{_snap_cfg.get('ema_period_3m',12)} 3m")
+if _snap_cfg.get("use_ema_5m"):    badges.append(f"📉 EMA{_snap_cfg.get('ema_period_5m',12)} 5m")
+if _snap_cfg.get("use_ema_15m"):   badges.append(f"📉 EMA{_snap_cfg.get('ema_period_15m',12)} 15m")
 if _snap_cfg.get("use_macd"):      badges.append("📊 MACD 🟢↑ 3m·5m·15m")
 if _snap_cfg.get("use_sar"):       badges.append("🪂 SAR 3m·5m·15m")
 if _snap_cfg.get("use_vol_spike"): badges.append(
@@ -1149,10 +1149,10 @@ if fc.get("total_watchlist", 0) > 0:
         after_f10 = after_f9  - fc.get("f10_sar",0)
 
         ema_parts = []
-        if _snap_cfg.get("use_ema_3m"):  ema_parts.append(f"3m EMA{_snap_cfg.get('ema_period_3m',200)}")
-        if _snap_cfg.get("use_ema_5m"):  ema_parts.append(f"5m EMA{_snap_cfg.get('ema_period_5m',200)}")
-        if _snap_cfg.get("use_ema_15m"): ema_parts.append(f"15m EMA{_snap_cfg.get('ema_period_15m',200)}")
-        ema_lbl  = ("F8 EMA ("+(" · ".join(ema_parts))+")") if ema_parts else "F8 EMA (off)"
+        if _snap_cfg.get("use_ema_3m"):  ema_parts.append(f"3m EMA{_snap_cfg.get('ema_period_3m',12)}")
+        if _snap_cfg.get("use_ema_5m"):  ema_parts.append(f"5m EMA{_snap_cfg.get('ema_period_5m',12)}")
+        if _snap_cfg.get("use_ema_15m"): ema_parts.append(f"15m EMA{_snap_cfg.get('ema_period_15m',12)}")
+        ema_lbl  = ("EMA_Selection ("+(" · ".join(ema_parts))+")") if ema_parts else "EMA_Selection (off)"
         macd_lbl = "F9 MACD 🟢↑ 3m·5m·15m"  if _snap_cfg.get("use_macd") else "F9 MACD (off)"
         sar_lbl  = "F10 SAR 3m·5m·15m"       if _snap_cfg.get("use_sar")  else "F10 SAR (off)"
         vol_lbl  = (f"F11 Vol ≥{_snap_cfg.get('vol_spike_mult',2.0)}× / {_snap_cfg.get('vol_spike_lookback',20)} 15m"
@@ -1166,7 +1166,7 @@ if fc.get("total_watchlist", 0) > 0:
             ("After F5 — 5m Resistance",          after_f5),
             ("After F6 — 15m Resistance",         after_f6),
             ("After F7 — 1h RSI",                 after_f7),
-            (f"After {ema_lbl}",                  after_f8),
+            (f"After {ema_lbl}",                   after_f8),
             (f"After {macd_lbl}",                 after_f9),
             (f"After {sar_lbl}",                  after_f10),
             (f"After {vol_lbl}",                  fc.get("passed",0)),
