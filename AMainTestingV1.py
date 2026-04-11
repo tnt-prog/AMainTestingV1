@@ -38,9 +38,8 @@ _SYMBOL_CACHE_TTL = 6 * 3600   # refresh OKX instrument list every 6 hours
 # ─────────────────────────────────────────────────────────────────────────────
 # Bulk pre-filter thresholds  (A)
 # ─────────────────────────────────────────────────────────────────────────────
-PRE_FILTER_MIN_VOL_USDT  =  500_000   # minimum 24 h USDT volume
-PRE_FILTER_MIN_CHANGE_PCT =     -3.0  # drop coins > 3 % red on the day
-PRE_FILTER_LOW_BUFFER     =    1.005  # price must be ≥ 0.5 % above 24 h low
+PRE_FILTER_MIN_VOL_USDT  =  100_000   # minimum 24 h USDT volume
+PRE_FILTER_LOW_BUFFER    =    1.005   # price must be ≥ 0.5 % above 24 h low
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Dubai Timezone (UTC+4, no DST)
@@ -430,8 +429,7 @@ def pre_filter_by_ticker(symbols: list, tickers: dict) -> list:
 
     Keeps a coin only when:
       1. 24 h USDT volume ≥ PRE_FILTER_MIN_VOL_USDT  (liquid market)
-      2. 24 h price change ≥ PRE_FILTER_MIN_CHANGE_PCT (not deeply bearish)
-      3. Last price ≥ 24 h low × PRE_FILTER_LOW_BUFFER (off the lows)
+      2. Last price ≥ 24 h low × PRE_FILTER_LOW_BUFFER (off the lows)
     """
     kept = []
     for sym in symbols:
@@ -439,17 +437,11 @@ def pre_filter_by_ticker(symbols: list, tickers: dict) -> list:
         if not t:
             continue
         last     = t["last"]
-        open24h  = t["open24h"]
         low24h   = t["low24h"]
         vol_usdt = t["volCcy24h"]
 
         if vol_usdt < PRE_FILTER_MIN_VOL_USDT:
             continue
-
-        if open24h > 0:
-            change_pct = (last - open24h) / open24h * 100
-            if change_pct < PRE_FILTER_MIN_CHANGE_PCT:
-                continue
 
         if low24h > 0 and last < low24h * PRE_FILTER_LOW_BUFFER:
             continue
@@ -623,11 +615,6 @@ def process(sym, cfg: dict):
         rsi5_q = (calc_rsi_series(closes_5m_q) or [0])[-1]
         if cfg.get("use_rsi_5m", True) and rsi5_q < cfg["rsi_5m_min"]:
             with _filter_lock: _filter_counts["f4_rsi5m"] = _filter_counts.get("f4_rsi5m",0)+1
-            return None
-
-        if cfg.get("use_resistance_5m", True) and \
-                is_near_resistance(entry_q, find_swing_highs(m5_quick[-25:], 2), tol):
-            with _filter_lock: _filter_counts["f5_res5m"] = _filter_counts.get("f5_res5m",0)+1
             return None
 
         # ── B — Stage 2: Fetch all 4 timeframes IN PARALLEL (3 API calls saved)
@@ -928,7 +915,7 @@ with st.sidebar:
         help="One API call eliminates coins with low volume, big red candle, or near 24h low. "
              "Disable only to deep-scan ALL watchlist coins (much slower).")
     if new_use_pre_filter:
-        st.caption("✅ Vol ≥ 500k · Change ≥ −3% · Price ≥ Low × 1.005")
+        st.caption("✅ Vol ≥ 100k USDT · Price ≥ 24h Low × 1.005")
     st.divider()
 
     # ── F4: 5m RSI ─────────────────────────────────────────────────────────────
