@@ -626,32 +626,44 @@ def process(sym, cfg: dict):
             with _filter_lock: _filter_counts["f7_rsi1h"] = _filter_counts.get("f7_rsi1h",0)+1
             return None
 
-        # ── F8: EMA ───────────────────────────────────────────────────────────
+        # ── F8: EMA_Selection — capture actual EMA value at entry ─────────────
+        ema_3m_val = ema_5m_val = ema_15m_val = None
         if cfg.get("use_ema_3m"):
             ema = calc_ema(closes_3m, max(2, int(cfg.get("ema_period_3m", 12))))
             if not ema or entry < ema[-1]:
                 with _filter_lock: _filter_counts["f8_ema"] = _filter_counts.get("f8_ema",0)+1
                 return None
+            ema_3m_val = round(ema[-1], 6)
         if cfg.get("use_ema_5m"):
             ema = calc_ema(closes_5m, max(2, int(cfg.get("ema_period_5m", 12))))
             if not ema or entry < ema[-1]:
                 with _filter_lock: _filter_counts["f8_ema"] = _filter_counts.get("f8_ema",0)+1
                 return None
+            ema_5m_val = round(ema[-1], 6)
         if cfg.get("use_ema_15m"):
             ema = calc_ema(closes_15m, max(2, int(cfg.get("ema_period_15m", 12))))
             if not ema or entry < ema[-1]:
                 with _filter_lock: _filter_counts["f8_ema"] = _filter_counts.get("f8_ema",0)+1
                 return None
+            ema_15m_val = round(ema[-1], 6)
 
-        # ── F9: MACD dark-green (3m + 5m + 15m) ──────────────────────────────
+        # ── F9: MACD dark-green — capture MACD line values ───────────────────
+        macd_3m_val = macd_5m_val = macd_15m_val = None
         if cfg.get("use_macd"):
             if not (macd_bullish(closes_3m) and
                     macd_bullish(closes_5m)  and
                     macd_bullish(closes_15m)):
                 with _filter_lock: _filter_counts["f9_macd"] = _filter_counts.get("f9_macd",0)+1
                 return None
+            ml3,  _, _ = calc_macd(closes_3m)
+            ml5,  _, _ = calc_macd(closes_5m)
+            ml15, _, _ = calc_macd(closes_15m)
+            if ml3:  macd_3m_val  = round(ml3[-1],  8)
+            if ml5:  macd_5m_val  = round(ml5[-1],  8)
+            if ml15: macd_15m_val = round(ml15[-1], 8)
 
-        # ── F10: Parabolic SAR bullish (3m + 5m + 15m) ───────────────────────
+        # ── F10: Parabolic SAR — capture SAR value at entry ──────────────────
+        sar_3m_val = sar_5m_val = sar_15m_val = None
         if cfg.get("use_sar"):
             sar_3m  = calc_parabolic_sar(m3_candles)
             sar_5m  = calc_parabolic_sar(m5)
@@ -661,8 +673,12 @@ def process(sym, cfg: dict):
                     sar_15m and sar_15m[-1][1]):
                 with _filter_lock: _filter_counts["f10_sar"] = _filter_counts.get("f10_sar",0)+1
                 return None
+            sar_3m_val  = round(sar_3m[-1][0],  6)
+            sar_5m_val  = round(sar_5m[-1][0],  6)
+            sar_15m_val = round(sar_15m[-1][0], 6)
 
-        # ── F11: Volume spike (15m) ───────────────────────────────────────────
+        # ── F11: Volume spike — capture vol ratio ─────────────────────────────
+        vol_ratio = None
         if cfg.get("use_vol_spike"):
             lookback = max(2, int(cfg.get("vol_spike_lookback", 20)))
             mult     = float(cfg.get("vol_spike_mult", 2.0))
@@ -673,6 +689,7 @@ def process(sym, cfg: dict):
                 if avg_vol <= 0 or vols_15m[-1] < mult * avg_vol:
                     with _filter_lock: _filter_counts["f11_vol"] = _filter_counts.get("f11_vol",0)+1
                     return None
+                vol_ratio = round(vols_15m[-1] / avg_vol, 2) if avg_vol > 0 else None
 
         tp      = round(entry * (1 + cfg["tp_pct"]/100), 6)
         sl      = round(entry * (1 - cfg["sl_pct"]/100), 6)
@@ -684,15 +701,19 @@ def process(sym, cfg: dict):
 
         rsi5 = (calc_rsi_series(closes_5m) or [rsi5_q])[-1]   # use full-set RSI if available
         criteria = {
-            "rsi_5m":  round(rsi5,  1),
-            "rsi_1h":  round(rsi1h, 1),
-            "ema_3m":  ("✅" if cfg.get("use_ema_3m")    else "—"),
-            "ema_5m":  ("✅" if cfg.get("use_ema_5m")    else "—"),
-            "ema_15m": ("✅" if cfg.get("use_ema_15m")   else "—"),
-            "macd":    ("✅" if cfg.get("use_macd")      else "—"),
-            "sar":     ("✅" if cfg.get("use_sar")       else "—"),
-            "vol":     ("✅" if cfg.get("use_vol_spike") else "—"),
-            "res_tol": cfg["resistance_tol_pct"],
+            "rsi_5m":    round(rsi5,  1),
+            "rsi_1h":    round(rsi1h, 1),
+            "ema_3m":    ema_3m_val  if cfg.get("use_ema_3m")    else "—",
+            "ema_5m":    ema_5m_val  if cfg.get("use_ema_5m")    else "—",
+            "ema_15m":   ema_15m_val if cfg.get("use_ema_15m")   else "—",
+            "macd_3m":   macd_3m_val  if cfg.get("use_macd")     else "—",
+            "macd_5m":   macd_5m_val  if cfg.get("use_macd")     else "—",
+            "macd_15m":  macd_15m_val if cfg.get("use_macd")     else "—",
+            "sar_3m":    sar_3m_val   if cfg.get("use_sar")      else "—",
+            "sar_5m":    sar_5m_val   if cfg.get("use_sar")      else "—",
+            "sar_15m":   sar_15m_val  if cfg.get("use_sar")      else "—",
+            "vol_ratio": vol_ratio    if cfg.get("use_vol_spike") else "—",
+            "res_tol":   cfg["resistance_tol_pct"],
         }
 
         return {
@@ -1051,15 +1072,24 @@ if filtered_sorted:
         ts_str      = fmt_dubai(s.get("timestamp",""))
         close_str   = fmt_dubai(s["close_time"]) if s.get("close_time") else "—"
         crit        = s.get("criteria",{})
+        def _cv(v):
+            """Format a criteria value: show number if numeric, else show as-is."""
+            if v is None or v == "—": return "—"
+            try: return f"{float(v):.6f}".rstrip("0").rstrip(".")
+            except (TypeError, ValueError): return str(v)
         crit_str    = (
-            f"• RSI 5m  : {crit.get('rsi_5m','—')}\n"
-            f"• RSI 1h  : {crit.get('rsi_1h','—')}\n"
-            f"• EMA 3m  : {crit.get('ema_3m','—')}\n"
-            f"• EMA 5m  : {crit.get('ema_5m','—')}\n"
-            f"• EMA 15m : {crit.get('ema_15m','—')}\n"
-            f"• MACD    : {crit.get('macd','—')}\n"
-            f"• SAR     : {crit.get('sar','—')}\n"
-            f"• Vol     : {crit.get('vol','—')}"
+            f"• RSI 5m    : {crit.get('rsi_5m','—')}\n"
+            f"• RSI 1h    : {crit.get('rsi_1h','—')}\n"
+            f"• EMA 3m    : {_cv(crit.get('ema_3m','—'))}\n"
+            f"• EMA 5m    : {_cv(crit.get('ema_5m','—'))}\n"
+            f"• EMA 15m   : {_cv(crit.get('ema_15m','—'))}\n"
+            f"• MACD 3m   : {_cv(crit.get('macd_3m', crit.get('macd','—')))}\n"
+            f"• MACD 5m   : {_cv(crit.get('macd_5m','—'))}\n"
+            f"• MACD 15m  : {_cv(crit.get('macd_15m','—'))}\n"
+            f"• SAR 3m    : {_cv(crit.get('sar_3m', crit.get('sar','—')))}\n"
+            f"• SAR 5m    : {_cv(crit.get('sar_5m','—'))}\n"
+            f"• SAR 15m   : {_cv(crit.get('sar_15m','—'))}\n"
+            f"• Vol ×avg  : {_cv(crit.get('vol_ratio', crit.get('vol','—')))}"
         ) if crit else "—"
         max_lev   = s.get("max_lev", get_max_leverage(s.get("symbol","")))
         sl_reason = analyze_sl_reason(s) if status=="sl_hit" else "—"
