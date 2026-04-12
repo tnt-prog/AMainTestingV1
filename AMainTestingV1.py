@@ -71,9 +71,6 @@ DEFAULT_CONFIG: dict = {
     "use_pre_filter":       True,   # Bulk ticker pre-filter (volume / change / low)
     "use_rsi_5m":           True,   # F4 — 5m RSI
     "rsi_5m_min":           30,
-    "use_resistance_5m":    True,   # F5 — 5m swing-high resistance
-    "use_resistance_15m":   True,   # F6 — 15m swing-high resistance
-    "resistance_tol_pct":   1.5,
     "use_rsi_1h":           True,   # F7 — 1h RSI
     "rsi_1h_min":           30,
     "rsi_1h_max":           95,
@@ -185,10 +182,9 @@ def analyze_sl_reason(sig: dict) -> str:
     criteria = sig.get("criteria", {})
     if not criteria:
         return "No criteria data captured"
-    reasons  = []
-    rsi_5m   = criteria.get("rsi_5m",  50)
-    rsi_1h   = criteria.get("rsi_1h",  50)
-    res_tol  = criteria.get("res_tol", 1.5)
+    reasons = []
+    rsi_5m  = criteria.get("rsi_5m", 50)
+    rsi_1h  = criteria.get("rsi_1h", 50)
     if rsi_5m < 35:
         reasons.append(f"RSI 5m very low at entry ({rsi_5m}) — momentum already fading")
     elif rsi_5m < 42:
@@ -197,8 +193,6 @@ def analyze_sl_reason(sig: dict) -> str:
         reasons.append(f"RSI 1h near overbought ({rsi_1h}) — higher-TF exhaustion risk")
     elif rsi_1h < 40:
         reasons.append(f"RSI 1h weak ({rsi_1h}) — no hourly uptrend support")
-    if res_tol < 1.0:
-        reasons.append("Tight resistance tolerance — may have entered near hidden resistance")
     if not reasons:
         reasons.append("Unexpected market reversal / macro event — filters were healthy at entry")
     return "\n".join(f"• {r}" for r in reasons)
@@ -491,18 +485,6 @@ def calc_rsi_series(closes, period=14):
         rsi.append(100. if al == 0 else 100 - 100/(1+ag/al))
     return rsi
 
-def find_swing_highs(candles, neighbors=2):
-    highs = [c["high"] for c in candles]
-    peaks = []
-    for i in range(neighbors, len(highs) - neighbors):
-        if (all(highs[i] > highs[i-j] for j in range(1, neighbors+1)) and
-                all(highs[i] > highs[i+j] for j in range(1, neighbors+1))):
-            peaks.append(highs[i])
-    return peaks
-
-def is_near_resistance(entry, peaks, tolerance):
-    return any(entry <= p <= entry * (1 + tolerance) for p in peaks)
-
 def calc_ema(values: list, period: int) -> list:
     if len(values) < period: return []
     k      = 2.0 / (period + 1)
@@ -643,8 +625,6 @@ def _reset_filter_counts():
         "pre_filtered_out": 0,   # removed by bulk ticker pre-filter (A)
         "checked":          0,   # entered deep-scan
         "f4_rsi5m":         0,
-        "f5_res5m":         0,
-        "f6_res15m":        0,
         "f7_rsi1h":         0,
         "f8_ema":           0,
         "f9_macd":          0,
@@ -671,7 +651,6 @@ def process(sym, cfg: dict):
         m5_quick    = get_klines(sym, "5m", 50)[:-1]
         closes_5m_q = [c["close"] for c in m5_quick]
         entry_q     = round(m5_quick[-1]["close"], 6)
-        tol         = cfg["resistance_tol_pct"] / 100
 
         rsi5_q = (calc_rsi_series(closes_5m_q) or [0])[-1]
         if cfg.get("use_rsi_5m", True) and rsi5_q < cfg["rsi_5m_min"]:
@@ -699,18 +678,6 @@ def process(sym, cfg: dict):
         closes_3m  = [c["close"] for c in m3_candles]
         closes_1h  = [c["close"] for c in m1h_candles]
         entry      = round(m5[-1]["close"], 6)
-
-        # ── F5: 5m resistance (full data) ─────────────────────────────────────
-        if cfg.get("use_resistance_5m", True) and \
-                is_near_resistance(entry, find_swing_highs(m5[-25:], 2), tol):
-            with _filter_lock: _filter_counts["f5_res5m"] = _filter_counts.get("f5_res5m",0)+1
-            return None
-
-        # ── F6: 15m resistance ────────────────────────────────────────────────
-        if cfg.get("use_resistance_15m", True) and \
-                is_near_resistance(entry, find_swing_highs(m15[-25:], 2), tol):
-            with _filter_lock: _filter_counts["f6_res15m"] = _filter_counts.get("f6_res15m",0)+1
-            return None
 
         # ── F7: 1h RSI ────────────────────────────────────────────────────────
         rsi1h = (calc_rsi_series(closes_1h) or [0])[-1]
@@ -816,7 +783,6 @@ def process(sym, cfg: dict):
             "sar_15m":   sar_15m_val  if cfg.get("use_sar")      else "—",
             "vol_ratio": vol_ratio    if cfg.get("use_vol_spike") else "—",
             "pdz_zone":  pdz_zone     if cfg.get("use_pdz", True) else "—",
-            "res_tol":   cfg["resistance_tol_pct"],
         }
 
         return {
@@ -997,20 +963,6 @@ with st.sidebar:
                                     disabled=not new_use_rsi_5m)
     st.divider()
 
-    # ── F5/F6: Resistance ───────────────────────────────────────────────────────
-    st.markdown("**🚧 Resistance Filters**")
-    r1, r2 = st.columns(2)
-    new_use_resistance_5m  = r1.checkbox("F5 — 5m Res",
-                                          value=bool(_snap_cfg.get("use_resistance_5m", True)),
-                                          key="cfg_use_res5m")
-    new_use_resistance_15m = r2.checkbox("F6 — 15m Res",
-                                          value=bool(_snap_cfg.get("use_resistance_15m", True)),
-                                          key="cfg_use_res15m")
-    new_res_tol = st.number_input("Tolerance % above entry", min_value=0.1, max_value=10.0, step=0.1,
-                                   value=float(_snap_cfg["resistance_tol_pct"]), key="cfg_res",
-                                   disabled=not (new_use_resistance_5m or new_use_resistance_15m))
-    st.divider()
-
     # ── F7: 1h RSI ─────────────────────────────────────────────────────────────
     new_use_rsi_1h = st.checkbox("📈 Enable F7 — 1h RSI",
                                   value=bool(_snap_cfg.get("use_rsi_1h", True)), key="cfg_use_rsi_1h")
@@ -1136,11 +1088,9 @@ with st.sidebar:
             # enable/disable flags
             "use_pre_filter":      bool(new_use_pre_filter),
             "use_rsi_5m":          bool(new_use_rsi_5m),
-            "use_resistance_5m":   bool(new_use_resistance_5m),
-            "use_resistance_15m":  bool(new_use_resistance_15m),
             "use_rsi_1h":          bool(new_use_rsi_1h),
             # filter parameters
-            "rsi_5m_min": int(new_rsi5_min), "resistance_tol_pct": new_res_tol,
+            "rsi_5m_min": int(new_rsi5_min),
             "rsi_1h_min": int(new_rsi1h_min), "rsi_1h_max": int(new_rsi1h_max),
             "loop_minutes": int(new_loop), "cooldown_minutes": int(new_cool),
             "use_ema_3m": bool(new_use_ema_3m), "ema_period_3m": int(new_ema_period_3m),
@@ -1338,9 +1288,7 @@ if fc.get("total_watchlist", 0) > 0:
         after_pre = total - pre_out_n
         checked   = fc.get("checked", after_pre)
         after_f4  = checked   - fc.get("f4_rsi5m",0)
-        after_f5  = after_f4  - fc.get("f5_res5m",0)
-        after_f6  = after_f5  - fc.get("f6_res15m",0)
-        after_f7  = after_f6  - fc.get("f7_rsi1h",0)
+        after_f7  = after_f4  - fc.get("f7_rsi1h",0)
         after_f8  = after_f7  - fc.get("f8_ema",0)
         after_f9  = after_f8  - fc.get("f9_macd",0)
         after_f10 = after_f9  - fc.get("f10_sar",0)
@@ -1352,8 +1300,6 @@ if fc.get("total_watchlist", 0) > 0:
 
         pre_lbl  = "⚡ After Bulk Pre-filter" if _snap_cfg.get("use_pre_filter", True) else "⚡ Pre-filter (disabled)"
         f4_lbl   = f"F4 — 5m RSI ≥{_snap_cfg.get('rsi_5m_min',30)}" if _snap_cfg.get("use_rsi_5m", True) else "F4 — 5m RSI (off)"
-        f5_lbl   = "F5 — 5m Resistance" if _snap_cfg.get("use_resistance_5m", True) else "F5 — 5m Resistance (off)"
-        f6_lbl   = "F6 — 15m Resistance" if _snap_cfg.get("use_resistance_15m", True) else "F6 — 15m Resistance (off)"
         f7_lbl   = (f"F7 — 1h RSI {_snap_cfg.get('rsi_1h_min',30)}–{_snap_cfg.get('rsi_1h_max',95)}"
                     if _snap_cfg.get("use_rsi_1h", True) else "F7 — 1h RSI (off)")
         ema_parts = []
@@ -1372,8 +1318,6 @@ if fc.get("total_watchlist", 0) > 0:
             (pre_lbl,                 after_pre),
             ("Entered Deep Scan",     checked),
             (f"After {f4_lbl}",       after_f4),
-            (f"After {f5_lbl}",       after_f5),
-            (f"After {f6_lbl}",       after_f6),
             (f"After {f7_lbl}",       after_f7),
             (f"After {ema_lbl}",      after_f8),
             (f"After {macd_lbl}",     after_f9),
@@ -1385,7 +1329,7 @@ if fc.get("total_watchlist", 0) > 0:
             y=[d[0] for d in funnel_data],
             x=[d[1] for d in funnel_data],
             marker=dict(color=["#1f6feb","#388bfd","#58a6ff","#79c0ff","#a5d6ff",
-                                "#3fb950","#56d364","#d29922","#e3b341","#f0883e","#c4a01a","#f85149"]),
+                                "#3fb950","#56d364","#d29922","#e3b341","#f85149"]),
             textinfo="value+percent initial",
         ))
         fig_funnel.update_layout(
