@@ -87,7 +87,8 @@ DEFAULT_CONFIG: dict = {
     "use_vol_spike":      False,
     "vol_spike_mult":     2.0,
     "vol_spike_lookback": 20,
-    "use_pdz":            True,   # F12 — Premium/Discount/Equilibrium zone (5m)
+    "use_pdz_5m":            True,   # F8 — Premium/Discount/Equilibrium zone (5m)
+    "use_pdz_15m":           True,   # F9 — Premium/Discount/Equilibrium zone (15m)
     "watchlist": [
         # ── Top-tier liquid OKX perpetuals ───────────────────────────────────
         "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","ADAUSDT",
@@ -574,8 +575,8 @@ def calc_pdz_zone(candles: list, price: float) -> tuple:
       • Discount zone                         → QUALIFIES  (greatest room to pump)
       • Equilibrium zone                      → REJECTED   (indecision, risky)
       • Premium zone                          → REJECTED   (no upward room)
-      • Band A (equil_top < price < prem_bot) → QUALIFIES if room ≥ 3 %
-      • Band B (disc_top  < price < equil_bot)→ QUALIFIES if room ≥ 3 %
+      • Band A (equil_top < price < prem_bot) → QUALIFIES if room ≥ 1.5 %
+      • Band B (disc_top  < price < equil_bot)→ QUALIFIES if room ≥ 1.5 %
 
     Returns (qualifies: bool, zone_label: str)
     """
@@ -608,12 +609,12 @@ def calc_pdz_zone(candles: list, price: float) -> tuple:
         # Band A: between Equilibrium top and Premium bottom
         room_pct = (premium_bottom - price) / price * 100
         label    = f"BandA(room:{room_pct:.1f}%)"
-        return (room_pct >= 3.0), label
+        return (room_pct >= 1.5), label
     else:
         # Band B: between Discount top and Equilibrium bottom
         room_pct = (equil_bottom - price) / price * 100
         label    = f"BandB(room:{room_pct:.1f}%)"
-        return (room_pct >= 3.0), label
+        return (room_pct >= 1.5), label
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -624,25 +625,27 @@ def _reset_filter_counts():
         "total_watchlist":  0,
         "pre_filtered_out": 0,   # removed by bulk ticker pre-filter (A)
         "checked":          0,   # entered deep-scan
-        "f4_rsi5m":         0,
-        "f7_rsi1h":         0,
-        "f8_ema":           0,
-        "f9_macd":          0,
-        "f10_sar":          0,
-        "f11_vol":          0,
-        "f12_pdz":          0,
+        "f2_rsi5m":         0,
+        "f3_rsi1h":         0,
+        "f4_ema":           0,
+        "f5_macd":          0,
+        "f6_sar":          0,
+        "f7_vol":          0,
+        "f8_pdz5m":          0,
+        "f9_pdz15m":         0,
         "passed":           0,
         "errors":           0,
         # ── per-stage symbol tracking ──────────────────────────────────────────
         "pre_filter_passed_syms": [],   # coins that passed bulk pre-filter
         "checked_syms":           [],   # coins that entered deep-scan
+        "f2_elim_syms":           [],
+        "f3_elim_syms":           [],
         "f4_elim_syms":           [],
-        "f7_elim_syms":           [],
-        "f8_elim_syms":           [],
-        "f9_elim_syms":           [],
-        "f10_elim_syms":          [],
-        "f11_elim_syms":          [],
-        "f12_elim_syms":          [],
+        "f5_elim_syms":           [],
+        "f6_elim_syms":          [],
+        "f7_elim_syms":          [],
+        "f8_elim_syms":          [],
+        "f9_elim_syms":          [],
         "passed_syms":            [],
     }
     with _filter_lock:
@@ -667,8 +670,8 @@ def process(sym, cfg: dict):
         rsi5_q = (calc_rsi_series(closes_5m_q) or [0])[-1]
         if cfg.get("use_rsi_5m", True) and rsi5_q < cfg["rsi_5m_min"]:
             with _filter_lock:
-                _filter_counts["f4_rsi5m"] = _filter_counts.get("f4_rsi5m",0)+1
-                _filter_counts["f4_elim_syms"].append(sym)
+                _filter_counts["f2_rsi5m"] = _filter_counts.get("f2_rsi5m",0)+1
+                _filter_counts["f2_elim_syms"].append(sym)
             return None
 
         # ── B — Stage 2: Fetch all 4 timeframes IN PARALLEL (3 API calls saved)
@@ -698,8 +701,8 @@ def process(sym, cfg: dict):
         if cfg.get("use_rsi_1h", True) and \
                 not (cfg["rsi_1h_min"] <= rsi1h <= cfg["rsi_1h_max"]):
             with _filter_lock:
-                _filter_counts["f7_rsi1h"] = _filter_counts.get("f7_rsi1h",0)+1
-                _filter_counts["f7_elim_syms"].append(sym)
+                _filter_counts["f3_rsi1h"] = _filter_counts.get("f3_rsi1h",0)+1
+                _filter_counts["f3_elim_syms"].append(sym)
             return None
 
         # ── F8: EMA_Selection — capture actual EMA value at entry ─────────────
@@ -708,24 +711,24 @@ def process(sym, cfg: dict):
             ema = calc_ema(closes_3m, max(2, int(cfg.get("ema_period_3m", 12))))
             if not ema or entry < ema[-1]:
                 with _filter_lock:
-                    _filter_counts["f8_ema"] = _filter_counts.get("f8_ema",0)+1
-                    _filter_counts["f8_elim_syms"].append(sym)
+                    _filter_counts["f4_ema"] = _filter_counts.get("f4_ema",0)+1
+                    _filter_counts["f4_elim_syms"].append(sym)
                 return None
             ema_3m_val = round(ema[-1], 6)
         if cfg.get("use_ema_5m"):
             ema = calc_ema(closes_5m, max(2, int(cfg.get("ema_period_5m", 12))))
             if not ema or entry < ema[-1]:
                 with _filter_lock:
-                    _filter_counts["f8_ema"] = _filter_counts.get("f8_ema",0)+1
-                    _filter_counts["f8_elim_syms"].append(sym)
+                    _filter_counts["f4_ema"] = _filter_counts.get("f4_ema",0)+1
+                    _filter_counts["f4_elim_syms"].append(sym)
                 return None
             ema_5m_val = round(ema[-1], 6)
         if cfg.get("use_ema_15m"):
             ema = calc_ema(closes_15m, max(2, int(cfg.get("ema_period_15m", 12))))
             if not ema or entry < ema[-1]:
                 with _filter_lock:
-                    _filter_counts["f8_ema"] = _filter_counts.get("f8_ema",0)+1
-                    _filter_counts["f8_elim_syms"].append(sym)
+                    _filter_counts["f4_ema"] = _filter_counts.get("f4_ema",0)+1
+                    _filter_counts["f4_elim_syms"].append(sym)
                 return None
             ema_15m_val = round(ema[-1], 6)
 
@@ -736,8 +739,8 @@ def process(sym, cfg: dict):
                     macd_bullish(closes_5m)  and
                     macd_bullish(closes_15m)):
                 with _filter_lock:
-                    _filter_counts["f9_macd"] = _filter_counts.get("f9_macd",0)+1
-                    _filter_counts["f9_elim_syms"].append(sym)
+                    _filter_counts["f5_macd"] = _filter_counts.get("f5_macd",0)+1
+                    _filter_counts["f5_elim_syms"].append(sym)
                 return None
             ml3,  _, _ = calc_macd(closes_3m)
             ml5,  _, _ = calc_macd(closes_5m)
@@ -756,8 +759,8 @@ def process(sym, cfg: dict):
                     sar_5m  and sar_5m[-1][1]  and
                     sar_15m and sar_15m[-1][1]):
                 with _filter_lock:
-                    _filter_counts["f10_sar"] = _filter_counts.get("f10_sar",0)+1
-                    _filter_counts["f10_elim_syms"].append(sym)
+                    _filter_counts["f6_sar"] = _filter_counts.get("f6_sar",0)+1
+                    _filter_counts["f6_elim_syms"].append(sym)
                 return None
             sar_3m_val  = round(sar_3m[-1][0],  6)
             sar_5m_val  = round(sar_5m[-1][0],  6)
@@ -774,19 +777,29 @@ def process(sym, cfg: dict):
                 avg_vol  = sum(window)/len(window)
                 if avg_vol <= 0 or vols_15m[-1] < mult * avg_vol:
                     with _filter_lock:
-                        _filter_counts["f11_vol"] = _filter_counts.get("f11_vol",0)+1
-                        _filter_counts["f11_elim_syms"].append(sym)
+                        _filter_counts["f7_vol"] = _filter_counts.get("f7_vol",0)+1
+                        _filter_counts["f7_elim_syms"].append(sym)
                     return None
                 vol_ratio = round(vols_15m[-1] / avg_vol, 2) if avg_vol > 0 else None
 
-        # ── F12: PDZ — Premium / Discount / Equilibrium zone (5m) ───────────
-        pdz_zone = "—"
-        if cfg.get("use_pdz", True):
-            pdz_pass, pdz_zone = calc_pdz_zone(m5, entry)
-            if not pdz_pass:
+        # ── F8: PDZ — Premium / Discount / Equilibrium zone (5m) ────────────
+        pdz_zone_5m = "—"
+        if cfg.get("use_pdz_5m", True):
+            pdz_pass_5m, pdz_zone_5m = calc_pdz_zone(m5, entry)
+            if not pdz_pass_5m:
                 with _filter_lock:
-                    _filter_counts["f12_pdz"] = _filter_counts.get("f12_pdz", 0) + 1
-                    _filter_counts["f12_elim_syms"].append(sym)
+                    _filter_counts["f8_pdz5m"] = _filter_counts.get("f8_pdz5m", 0) + 1
+                    _filter_counts["f8_elim_syms"].append(sym)
+                return None
+
+        # ── F9: PDZ — Premium / Discount / Equilibrium zone (15m) ───────────
+        pdz_zone_15m = "—"
+        if cfg.get("use_pdz_15m", True):
+            pdz_pass_15m, pdz_zone_15m = calc_pdz_zone(m15, entry)
+            if not pdz_pass_15m:
+                with _filter_lock:
+                    _filter_counts["f9_pdz15m"] = _filter_counts.get("f9_pdz15m", 0) + 1
+                    _filter_counts["f9_elim_syms"].append(sym)
                 return None
 
         tp      = round(entry * (1 + cfg["tp_pct"]/100), 6)
@@ -811,8 +824,9 @@ def process(sym, cfg: dict):
             "sar_3m":    sar_3m_val   if cfg.get("use_sar")      else "—",
             "sar_5m":    sar_5m_val   if cfg.get("use_sar")      else "—",
             "sar_15m":   sar_15m_val  if cfg.get("use_sar")      else "—",
-            "vol_ratio": vol_ratio    if cfg.get("use_vol_spike") else "—",
-            "pdz_zone":  pdz_zone     if cfg.get("use_pdz", True) else "—",
+            "vol_ratio":    vol_ratio     if cfg.get("use_vol_spike")    else "—",
+            "pdz_zone_5m":  pdz_zone_5m  if cfg.get("use_pdz_5m",  True) else "—",
+            "pdz_zone_15m": pdz_zone_15m if cfg.get("use_pdz_15m", True) else "—",
         }
 
         return {
@@ -976,27 +990,49 @@ with st.sidebar:
     new_sl = c2.number_input("SL %", min_value=0.1, max_value=20.0, step=0.1, value=float(_snap_cfg["sl_pct"]),    key="cfg_sl")
     st.divider()
 
-    # ── Pre-filter ──────────────────────────────────────────────────────────────
+    # ── F1: Bulk Pre-filter ────────────────────────────────────────────────────
+    st.markdown("**⚡ F1 — Bulk Pre-filter**")
     new_use_pre_filter = st.checkbox(
-        "⚡ Enable Bulk Pre-filter",
+        "Enable F1 — Bulk Pre-filter",
         value=bool(_snap_cfg.get("use_pre_filter", True)), key="cfg_use_pre_filter",
-        help="One API call eliminates coins with low volume, big red candle, or near 24h low. "
-             "Disable only to deep-scan ALL watchlist coins (much slower).")
+        help=(
+            "F1 — Bulk Pre-filter\n\n"
+            "One API call screens the entire watchlist before any candle fetching.\n"
+            "✅ Keeps: 24h Vol ≥ 100,000 USDT  ·  Price ≥ 24h Low × 1.005\n"
+            "❌ Drops: Low-volume coins · Coins hugging the 24h low\n\n"
+            "Disabling forces a full deep-scan of every coin (much slower)."
+        ))
     if new_use_pre_filter:
         st.caption("✅ Vol ≥ 100k USDT · Price ≥ 24h Low × 1.005")
     st.divider()
 
-    # ── F4: 5m RSI ─────────────────────────────────────────────────────────────
-    new_use_rsi_5m = st.checkbox("📈 Enable F4 — 5m RSI",
-                                  value=bool(_snap_cfg.get("use_rsi_5m", True)), key="cfg_use_rsi_5m")
+    # ── F2: 5m RSI ─────────────────────────────────────────────────────────────
+    st.markdown("**📈 F2 — 5m RSI**")
+    new_use_rsi_5m = st.checkbox(
+        "Enable F2 — 5m RSI",
+        value=bool(_snap_cfg.get("use_rsi_5m", True)), key="cfg_use_rsi_5m",
+        help=(
+            "F2 — 5-Minute RSI Filter\n\n"
+            "RSI(14) on the last 50 × 5m candles must be ≥ the minimum threshold.\n"
+            "This is a fast Stage-1 exit — coins failing here skip all further fetches.\n\n"
+            "A low RSI signals weak short-term momentum — not suitable for a long entry."
+        ))
     new_rsi5_min = st.number_input("5m RSI min", min_value=0, max_value=100, step=1,
                                     value=int(_snap_cfg["rsi_5m_min"]), key="cfg_rsi5",
                                     disabled=not new_use_rsi_5m)
     st.divider()
 
-    # ── F7: 1h RSI ─────────────────────────────────────────────────────────────
-    new_use_rsi_1h = st.checkbox("📈 Enable F7 — 1h RSI",
-                                  value=bool(_snap_cfg.get("use_rsi_1h", True)), key="cfg_use_rsi_1h")
+    # ── F3: 1h RSI ─────────────────────────────────────────────────────────────
+    st.markdown("**📈 F3 — 1h RSI**")
+    new_use_rsi_1h = st.checkbox(
+        "Enable F3 — 1h RSI",
+        value=bool(_snap_cfg.get("use_rsi_1h", True)), key="cfg_use_rsi_1h",
+        help=(
+            "F3 — 1-Hour RSI Filter\n\n"
+            "RSI(14) on the 1h timeframe must fall within the Min–Max band.\n\n"
+            "Min: ensures real hourly momentum exists (coin is not dead).\n"
+            "Max: avoids entries when the coin is already overbought on the higher timeframe."
+        ))
     c3, c4 = st.columns(2)
     new_rsi1h_min = c3.number_input("1h min", min_value=0, max_value=100, step=1,
                                      value=int(_snap_cfg["rsi_1h_min"]), key="cfg_rsi1h_min",
@@ -1006,41 +1042,78 @@ with st.sidebar:
                                      disabled=not new_use_rsi_1h)
     st.divider()
 
-    # ── EMA_Selection ──────────────────────────────────────────────────────────
-    st.markdown("**📉 EMA_Selection** (price must be above EMA)")
+    # ── F4: EMA Selection ──────────────────────────────────────────────────────
+    st.markdown("**📉 F4 — EMA Selection** (price must be above EMA)",
+                help=(
+                    "F4 — EMA Selection Filter\n\n"
+                    "Entry price must be ABOVE the chosen EMA on each enabled timeframe.\n"
+                    "Being above the EMA confirms the short-term trend is bullish.\n\n"
+                    "Each timeframe (3m, 5m, 15m) is independently toggleable.\n"
+                    "Default EMA period: 12. Adjust per timeframe using the number input."
+                ))
     ea1, ea2 = st.columns([1,2])
     new_use_ema_3m    = ea1.checkbox("3m EMA", value=bool(_snap_cfg.get("use_ema_3m",False)), key="cfg_use_ema_3m")
-    new_ema_period_3m = ea2.number_input("P##3m", min_value=2, max_value=500, step=1, value=int(_snap_cfg.get("ema_period_3m",12)),
+    new_ema_period_3m = ea2.number_input("P##3m", min_value=2, max_value=500, step=1,
+                                         value=int(_snap_cfg.get("ema_period_3m",12)),
                                          key="cfg_ema_period_3m", disabled=not new_use_ema_3m,
                                          label_visibility="collapsed")
     eb1, eb2 = st.columns([1,2])
-    new_use_ema_5m    = eb1.checkbox("5m EMA", value=bool(_snap_cfg.get("use_ema_5m",True)),  key="cfg_use_ema_5m")
-    new_ema_period_5m = eb2.number_input("P##5m", min_value=2, max_value=500, step=1, value=int(_snap_cfg.get("ema_period_5m",12)),
+    new_use_ema_5m    = eb1.checkbox("5m EMA", value=bool(_snap_cfg.get("use_ema_5m",True)), key="cfg_use_ema_5m")
+    new_ema_period_5m = eb2.number_input("P##5m", min_value=2, max_value=500, step=1,
+                                         value=int(_snap_cfg.get("ema_period_5m",12)),
                                          key="cfg_ema_period_5m", disabled=not new_use_ema_5m,
                                          label_visibility="collapsed")
     ec1, ec2 = st.columns([1,2])
     new_use_ema_15m    = ec1.checkbox("15m EMA", value=bool(_snap_cfg.get("use_ema_15m",True)), key="cfg_use_ema_15m")
-    new_ema_period_15m = ec2.number_input("P##15m", min_value=2, max_value=500, step=1, value=int(_snap_cfg.get("ema_period_15m",12)),
+    new_ema_period_15m = ec2.number_input("P##15m", min_value=2, max_value=500, step=1,
+                                          value=int(_snap_cfg.get("ema_period_15m",12)),
                                           key="cfg_ema_period_15m", disabled=not new_use_ema_15m,
                                           label_visibility="collapsed")
     st.divider()
 
-    # ── F9: MACD ───────────────────────────────────────────────────────────────
-    st.markdown("**📊 F9 — MACD** (dark 🟢 histogram, 3m·5m·15m)")
-    new_use_macd = st.checkbox("Enable MACD filter", value=bool(_snap_cfg.get("use_macd",True)), key="cfg_use_macd",
-        help="MACD>0, Signal>0, Histogram>0 AND increasing (dark green only), crossover within 12 candles — on 3m·5m·15m")
-    if new_use_macd: st.caption("✅ MACD>0 · Signal>0 · Histogram 🟢↑ · Crossover ↑")
+    # ── F5: MACD ───────────────────────────────────────────────────────────────
+    st.markdown("**📊 F5 — MACD** (dark 🟢 histogram, 3m·5m·15m)")
+    new_use_macd = st.checkbox(
+        "Enable F5 — MACD filter",
+        value=bool(_snap_cfg.get("use_macd",True)), key="cfg_use_macd",
+        help=(
+            "F5 — MACD Dark Green Histogram Filter\n\n"
+            "All of the following must be true on 3m, 5m, AND 15m simultaneously:\n"
+            "  • MACD line > 0\n"
+            "  • Signal line > 0\n"
+            "  • Histogram > 0 AND increasing (dark green — not fading)\n"
+            "  • Bullish crossover within the last 12 candles\n\n"
+            "Ensures strong, fresh bullish momentum across all timeframes."
+        ))
+    if new_use_macd: st.caption("✅ MACD>0 · Signal>0 · Histogram 🟢↑ · Crossover within 12 candles")
     st.divider()
 
-    # ── F10: SAR ───────────────────────────────────────────────────────────────
-    st.markdown("**🪂 F10 — Parabolic SAR** (3m·5m·15m)")
-    new_use_sar = st.checkbox("Enable SAR filter", value=bool(_snap_cfg.get("use_sar",True)), key="cfg_use_sar")
+    # ── F6: Parabolic SAR ──────────────────────────────────────────────────────
+    st.markdown("**🪂 F6 — Parabolic SAR** (3m·5m·15m)")
+    new_use_sar = st.checkbox(
+        "Enable F6 — SAR filter",
+        value=bool(_snap_cfg.get("use_sar",True)), key="cfg_use_sar",
+        help=(
+            "F6 — Parabolic SAR Filter\n\n"
+            "SAR must be positioned BELOW current price on 3m, 5m, AND 15m.\n\n"
+            "SAR below price = bullish mode.\n"
+            "If any timeframe has SAR above price, the trend is bearish → coin rejected."
+        ))
     if new_use_sar: st.caption("✅ SAR below price on 3m · 5m · 15m")
     st.divider()
 
-    # ── F11: Volume Spike ──────────────────────────────────────────────────────
-    st.markdown("**📦 F11 — Volume Spike** (15m)")
-    new_use_vol_spike = st.checkbox("Enable vol spike", value=bool(_snap_cfg.get("use_vol_spike",False)), key="cfg_use_vol_spike")
+    # ── F7: Volume Spike ───────────────────────────────────────────────────────
+    st.markdown("**📦 F7 — Volume Spike** (15m)")
+    new_use_vol_spike = st.checkbox(
+        "Enable F7 — Volume Spike",
+        value=bool(_snap_cfg.get("use_vol_spike",False)), key="cfg_use_vol_spike",
+        help=(
+            "F7 — Volume Spike Filter (disabled by default)\n\n"
+            "Most recent 15m candle volume must be ≥ Mult × average of prior Lookback candles.\n\n"
+            "Confirms strong buying pressure behind the move.\n"
+            "Mult: spike multiplier (e.g. 2.0 = must be 2× average).\n"
+            "Lookback: number of prior candles used to compute the average."
+        ))
     vx1, vx2 = st.columns(2)
     new_vol_mult     = vx1.number_input("Mult (X×)", min_value=1.0, max_value=20.0, step=0.5,
                                          value=float(_snap_cfg.get("vol_spike_mult",2.0)), key="cfg_vol_mult",
@@ -1050,18 +1123,40 @@ with st.sidebar:
                                          disabled=not new_use_vol_spike)
     st.divider()
 
-    # ── F12: PDZ — Premium / Discount / Equilibrium zones ──────────────────────
-    st.markdown("**🎯 F12 — PDZ — Premium / Discount Zones** (5m)")
-    new_use_pdz = st.checkbox(
-        "Enable PDZ filter",
-        value=bool(_snap_cfg.get("use_pdz", True)), key="cfg_use_pdz",
+    # ── F8: PDZ 5m ─────────────────────────────────────────────────────────────
+    st.markdown("**🎯 F8 — PDZ Zones** (5m)")
+    new_use_pdz_5m = st.checkbox(
+        "Enable F8 — PDZ Filter (5m)",
+        value=bool(_snap_cfg.get("use_pdz_5m", True)), key="cfg_use_pdz_5m",
         help=(
-            "Uses DZSAFM Smart Money zone logic on 5m candles.\n\n"
-            "✅ Qualifies: Discount zone · BandA ≥3% room · BandB ≥3% room\n"
-            "❌ Rejected:  Equilibrium zone · Premium zone"
+            "F8 — Premium / Discount / Equilibrium Zone Filter (5m)\n\n"
+            "DZSAFM Smart Money zones on last 50 × 5m candles.\n"
+            "Zones from swing High (H) and Low (L):\n"
+            "  Premium bottom = 0.95×H + 0.05×L\n"
+            "  Equilibrium    = middle band around midpoint\n"
+            "  Discount top   = 0.05×H + 0.95×L\n\n"
+            "✅ Qualifies: Discount zone · Band A/B with ≥1.5% room to next zone\n"
+            "❌ Rejected:  Equilibrium (indecision) · Premium (no upward room)"
         ))
-    if new_use_pdz:
-        st.caption("✅ Discount · BandA/B ≥3% room | ❌ Premium · Equilibrium")
+    if new_use_pdz_5m:
+        st.caption("✅ Discount · BandA/B ≥1.5% room | ❌ Premium · Equilibrium")
+    st.divider()
+
+    # ── F9: PDZ 15m ────────────────────────────────────────────────────────────
+    st.markdown("**🎯 F9 — PDZ Zones** (15m)")
+    new_use_pdz_15m = st.checkbox(
+        "Enable F9 — PDZ Filter (15m)",
+        value=bool(_snap_cfg.get("use_pdz_15m", True)), key="cfg_use_pdz_15m",
+        help=(
+            "F9 — Premium / Discount / Equilibrium Zone Filter (15m)\n\n"
+            "Same DZSAFM zone logic as F8, applied to last 50 × 15m candles.\n\n"
+            "Passing both F8 (5m) and F9 (15m) confirms the coin is in a\n"
+            "favourable Smart Money zone on both timeframes simultaneously.\n\n"
+            "✅ Qualifies: Discount zone · Band A/B with ≥1.5% room to next zone\n"
+            "❌ Rejected:  Equilibrium (indecision) · Premium (no upward room)"
+        ))
+    if new_use_pdz_15m:
+        st.caption("✅ Discount · BandA/B ≥1.5% room | ❌ Premium · Equilibrium")
     st.divider()
 
     st.markdown("**⏱ Execution**")
@@ -1130,7 +1225,8 @@ with st.sidebar:
             "use_macd": bool(new_use_macd), "use_sar": bool(new_use_sar),
             "use_vol_spike": bool(new_use_vol_spike),
             "vol_spike_mult": float(new_vol_mult), "vol_spike_lookback": int(new_vol_lookback),
-            "use_pdz": bool(new_use_pdz),
+            "use_pdz_5m": bool(new_use_pdz_5m),
+            "use_pdz_15m": bool(new_use_pdz_15m),
             "watchlist": new_wl,
         }
         with _config_lock: _b._bsc_cfg.clear(); _b._bsc_cfg.update(new_cfg)
@@ -1188,7 +1284,8 @@ if _snap_cfg.get("use_macd"):      badges.append("📊 MACD 🟢↑ 3m·5m·15m"
 if _snap_cfg.get("use_sar"):       badges.append("🪂 SAR 3m·5m·15m")
 if _snap_cfg.get("use_vol_spike"): badges.append(
     f"📦 Vol ≥{_snap_cfg.get('vol_spike_mult',2.0)}× / {_snap_cfg.get('vol_spike_lookback',20)} 15m")
-if _snap_cfg.get("use_pdz", True):  badges.append("🎯 PDZ Zones (5m)")
+if _snap_cfg.get("use_pdz_5m",  True):  badges.append("🎯 F8 — PDZ Zones (5m)")
+if _snap_cfg.get("use_pdz_15m", True):  badges.append("🎯 F9 — PDZ Zones (15m)")
 st.markdown("**Active Filters:**")
 st.caption("  |  ".join(badges) if badges else "No advanced filters enabled")
 st.divider()
@@ -1223,7 +1320,8 @@ if filtered_sorted:
             if v is None or v == "—" or v == "✅": return "—"
             try: return f"{float(v):.6f}".rstrip("0").rstrip(".")
             except (TypeError, ValueError): return str(v)
-        pdz_val  = crit.get("pdz_zone", "—") or "—"
+        pdz_5m_val  = crit.get("pdz_zone_5m",  "—") or "—"
+        pdz_15m_val = crit.get("pdz_zone_15m", "—") or "—"
         crit_str    = (
             f"• RSI 5m    : {crit.get('rsi_5m','—')}\n"
             f"• RSI 1h    : {crit.get('rsi_1h','—')}\n"
@@ -1237,7 +1335,8 @@ if filtered_sorted:
             f"• SAR 5m    : {_cv(crit.get('sar_5m'))}\n"
             f"• SAR 15m   : {_cv(crit.get('sar_15m'))}\n"
             f"• Vol ×avg  : {_cv(crit.get('vol_ratio'))}\n"
-            f"• PDZ Zone  : {pdz_val}"
+            f"• PDZ 5m    : {pdz_5m_val}\n"
+            f"• PDZ 15m   : {pdz_15m_val}"
         ) if crit else "—"
         max_lev   = s.get("max_lev", get_max_leverage(s.get("symbol","")))
         sl_reason = analyze_sl_reason(s) if status=="sl_hit" else "—"
@@ -1320,49 +1419,52 @@ if fc.get("total_watchlist", 0) > 0:
         pre_out_n = fc.get("pre_filtered_out", 0)
         after_pre = total - pre_out_n
         checked   = fc.get("checked", after_pre)
-        after_f4  = checked   - fc.get("f4_rsi5m",0)
-        after_f7  = after_f4  - fc.get("f7_rsi1h",0)
-        after_f8  = after_f7  - fc.get("f8_ema",0)
-        after_f9  = after_f8  - fc.get("f9_macd",0)
-        after_f10 = after_f9  - fc.get("f10_sar",0)
-        after_f11 = after_f10 - fc.get("f11_vol",0)
-        after_f12 = after_f11 - fc.get("f12_pdz",0)
+        after_f2  = checked   - fc.get("f2_rsi5m",0)
+        after_f3  = after_f2  - fc.get("f3_rsi1h",0)
+        after_f4  = after_f3  - fc.get("f4_ema",0)
+        after_f5  = after_f4  - fc.get("f5_macd",0)
+        after_f6 = after_f5  - fc.get("f6_sar",0)
+        after_f7 = after_f6 - fc.get("f7_vol",0)
+        after_f8 = after_f7 - fc.get("f8_pdz5m", 0)
+        after_f9 = after_f8 - fc.get("f9_pdz15m", 0)
 
         def _lbl(enabled, on_str, off_str="off"):
             return on_str if enabled else f"{on_str.split('—')[0].strip()} ({off_str})"
 
-        pre_lbl  = "⚡ After Bulk Pre-filter" if _snap_cfg.get("use_pre_filter", True) else "⚡ Pre-filter (disabled)"
-        f4_lbl   = f"F4 — 5m RSI ≥{_snap_cfg.get('rsi_5m_min',30)}" if _snap_cfg.get("use_rsi_5m", True) else "F4 — 5m RSI (off)"
-        f7_lbl   = (f"F7 — 1h RSI {_snap_cfg.get('rsi_1h_min',30)}–{_snap_cfg.get('rsi_1h_max',95)}"
-                    if _snap_cfg.get("use_rsi_1h", True) else "F7 — 1h RSI (off)")
+        pre_lbl    = "⚡ After Bulk Pre-filter" if _snap_cfg.get("use_pre_filter", True) else "⚡ Pre-filter (disabled)"
+        f2_lbl     = f"F2 — 5m RSI ≥{_snap_cfg.get('rsi_5m_min',30)}" if _snap_cfg.get("use_rsi_5m", True) else "F2 — 5m RSI (off)"
+        f3_lbl     = (f"F3 — 1h RSI {_snap_cfg.get('rsi_1h_min',30)}–{_snap_cfg.get('rsi_1h_max',95)}"
+                      if _snap_cfg.get("use_rsi_1h", True) else "F3 — 1h RSI (off)")
         ema_parts = []
         if _snap_cfg.get("use_ema_3m"):  ema_parts.append(f"3m EMA{_snap_cfg.get('ema_period_3m',12)}")
         if _snap_cfg.get("use_ema_5m"):  ema_parts.append(f"5m EMA{_snap_cfg.get('ema_period_5m',12)}")
         if _snap_cfg.get("use_ema_15m"): ema_parts.append(f"15m EMA{_snap_cfg.get('ema_period_15m',12)}")
-        ema_lbl  = ("EMA_Selection ("+(" · ".join(ema_parts))+")") if ema_parts else "EMA_Selection (off)"
-        macd_lbl = "F9 MACD 🟢↑ 3m·5m·15m"  if _snap_cfg.get("use_macd") else "F9 MACD (off)"
-        sar_lbl  = "F10 SAR 3m·5m·15m"       if _snap_cfg.get("use_sar")  else "F10 SAR (off)"
-        vol_lbl  = (f"F11 Vol ≥{_snap_cfg.get('vol_spike_mult',2.0)}× / {_snap_cfg.get('vol_spike_lookback',20)} 15m"
-                    if _snap_cfg.get("use_vol_spike") else "F11 Vol (off)")
-        pdz_lbl  = "F12 PDZ Zones (5m)" if _snap_cfg.get("use_pdz", True) else "F12 PDZ (off)"
+        ema_lbl    = ("F4 — EMA (" + (" · ".join(ema_parts)) + ")") if ema_parts else "F4 — EMA (off)"
+        macd_lbl   = "F5 — MACD 🟢↑ 3m·5m·15m" if _snap_cfg.get("use_macd")      else "F5 — MACD (off)"
+        sar_lbl    = "F6 — SAR 3m·5m·15m"       if _snap_cfg.get("use_sar")       else "F6 — SAR (off)"
+        vol_lbl    = (f"F7 — Vol ≥{_snap_cfg.get('vol_spike_mult',2.0)}× / {_snap_cfg.get('vol_spike_lookback',20)} 15m"
+                      if _snap_cfg.get("use_vol_spike") else "F7 — Vol (off)")
+        pdz5m_lbl  = "F8 — PDZ Zones (5m)"  if _snap_cfg.get("use_pdz_5m",  True) else "F8 — PDZ 5m (off)"
+        pdz15m_lbl = "F9 — PDZ Zones (15m)" if _snap_cfg.get("use_pdz_15m", True) else "F9 — PDZ 15m (off)"
 
         funnel_data = [
-            (f"Watchlist ({total})",  total),
-            (pre_lbl,                 after_pre),
-            ("Entered Deep Scan",     checked),
-            (f"After {f4_lbl}",       after_f4),
-            (f"After {f7_lbl}",       after_f7),
-            (f"After {ema_lbl}",      after_f8),
-            (f"After {macd_lbl}",     after_f9),
-            (f"After {sar_lbl}",      after_f10),
-            (f"After {vol_lbl}",      after_f11),
-            (f"After {pdz_lbl}",      fc.get("passed",0)),
+            (f"Watchlist ({total})",   total),
+            (pre_lbl,                  after_pre),
+            ("Entered Deep Scan",      checked),
+            (f"After {f2_lbl}",        after_f2),
+            (f"After {f3_lbl}",        after_f3),
+            (f"After {ema_lbl}",       after_f4),
+            (f"After {macd_lbl}",      after_f5),
+            (f"After {sar_lbl}",       after_f6),
+            (f"After {vol_lbl}",       after_f7),
+            (f"After {pdz5m_lbl}",     after_f8),
+            (f"After {pdz15m_lbl}",    after_f9),
         ]
         fig_funnel = go.Figure(go.Funnel(
             y=[d[0] for d in funnel_data],
             x=[d[1] for d in funnel_data],
             marker=dict(color=["#1f6feb","#388bfd","#58a6ff","#79c0ff","#a5d6ff",
-                                "#3fb950","#56d364","#d29922","#e3b341","#f85149"]),
+                                "#3fb950","#56d364","#7ee787","#d29922","#e3b341","#f85149"]),
             textinfo="value+percent initial",
         ))
         fig_funnel.update_layout(
@@ -1374,43 +1476,46 @@ if fc.get("total_watchlist", 0) > 0:
         col_b.metric("Deep scanned 🔬",     checked,   help="Received full multi-timeframe candle analysis")
         col_c.metric("Errors",              fc.get("errors",0))
 
-        # ── Qualified coins table — one row per filter stage ──────────────────
+        # ── Qualified coins table — one row per filter stage ────────────────────
         st.markdown("#### 🪙 Qualified Coins at Each Stage")
         st.caption("Shows which coins survived after each filter was applied in the last scan cycle.")
 
         # Build remaining sets by subtracting eliminated coins stage-by-stage
         _pre  = set(fc.get("pre_filter_passed_syms", []))
         _chk  = set(fc.get("checked_syms", []))
+        _f2e  = set(fc.get("f2_elim_syms",  []))
+        _f3e  = set(fc.get("f3_elim_syms",  []))
         _f4e  = set(fc.get("f4_elim_syms",  []))
+        _f5e  = set(fc.get("f5_elim_syms",  []))
+        _f6e  = set(fc.get("f6_elim_syms",  []))
         _f7e  = set(fc.get("f7_elim_syms",  []))
         _f8e  = set(fc.get("f8_elim_syms",  []))
         _f9e  = set(fc.get("f9_elim_syms",  []))
-        _f10e = set(fc.get("f10_elim_syms", []))
-        _f11e = set(fc.get("f11_elim_syms", []))
-        _f12e = set(fc.get("f12_elim_syms", []))
-        _pass = set(fc.get("passed_syms",   []))
+        _pass = set(fc.get("passed_syms",    []))
 
-        _after_f4  = _chk  - _f4e
-        _after_f7  = _after_f4  - _f7e
-        _after_f8  = _after_f7  - _f8e
-        _after_f9  = _after_f8  - _f9e
-        _after_f10 = _after_f9  - _f10e
-        _after_f11 = _after_f10 - _f11e
-        _after_f12 = _after_f11 - _f12e
+        _after_f2 = _chk      - _f2e
+        _after_f3 = _after_f2 - _f3e
+        _after_f4 = _after_f3 - _f4e
+        _after_f5 = _after_f4 - _f5e
+        _after_f6 = _after_f5 - _f6e
+        _after_f7 = _after_f6 - _f7e
+        _after_f8 = _after_f7 - _f8e
+        _after_f9 = _after_f8 - _f9e
 
         def _coin_str(s: set) -> str:
             return ", ".join(sorted(s)) if s else "—"
 
         stage_rows = [
-            ("⚡ After Bulk Pre-filter",        len(_pre),      _coin_str(_pre)),
-            ("🔬 Entered Deep Scan",             len(_chk),      _coin_str(_chk)),
-            (f"After F4 — {f4_lbl}",            len(_after_f4), _coin_str(_after_f4)),
-            (f"After F7 — {f7_lbl}",            len(_after_f7), _coin_str(_after_f7)),
-            (f"After F8 — {ema_lbl}",           len(_after_f8), _coin_str(_after_f8)),
-            (f"After F9 — {macd_lbl}",          len(_after_f9), _coin_str(_after_f9)),
-            (f"After F10 — {sar_lbl}",          len(_after_f10),_coin_str(_after_f10)),
-            (f"After F11 — {vol_lbl}",          len(_after_f11),_coin_str(_after_f11)),
-            (f"After F12 — {pdz_lbl}",          len(_pass),     _coin_str(_pass)),
+            ("⚡ After Bulk Pre-filter",   len(_pre),      _coin_str(_pre)),
+            ("🔬 Entered Deep Scan",    len(_chk),      _coin_str(_chk)),
+            (f"After {f2_lbl}",                len(_after_f2), _coin_str(_after_f2)),
+            (f"After {f3_lbl}",                len(_after_f3), _coin_str(_after_f3)),
+            (f"After {ema_lbl}",               len(_after_f4), _coin_str(_after_f4)),
+            (f"After {macd_lbl}",              len(_after_f5), _coin_str(_after_f5)),
+            (f"After {sar_lbl}",               len(_after_f6), _coin_str(_after_f6)),
+            (f"After {vol_lbl}",               len(_after_f7), _coin_str(_after_f7)),
+            (f"After {pdz5m_lbl}",             len(_after_f8), _coin_str(_after_f8)),
+            (f"After {pdz15m_lbl}",            len(_after_f9), _coin_str(_after_f9)),
         ]
 
         st.dataframe(
@@ -1424,8 +1529,6 @@ if fc.get("total_watchlist", 0) > 0:
             }
         )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Auto-refresh
 # ─────────────────────────────────────────────────────────────────────────────
 # Auto-refresh
 # ─────────────────────────────────────────────────────────────────────────────
