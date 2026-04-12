@@ -633,6 +633,17 @@ def _reset_filter_counts():
         "f12_pdz":          0,
         "passed":           0,
         "errors":           0,
+        # ── per-stage symbol tracking ──────────────────────────────────────────
+        "pre_filter_passed_syms": [],   # coins that passed bulk pre-filter
+        "checked_syms":           [],   # coins that entered deep-scan
+        "f4_elim_syms":           [],
+        "f7_elim_syms":           [],
+        "f8_elim_syms":           [],
+        "f9_elim_syms":           [],
+        "f10_elim_syms":          [],
+        "f11_elim_syms":          [],
+        "f12_elim_syms":          [],
+        "passed_syms":            [],
     }
     with _filter_lock:
         _filter_counts.clear()
@@ -646,6 +657,7 @@ def process(sym, cfg: dict):
     try:
         with _filter_lock:
             _filter_counts["checked"] = _filter_counts.get("checked", 0) + 1
+            _filter_counts["checked_syms"].append(sym)
 
         # ── C — Stage 1: Quick RSI + Resistance check (50 candles, 1 API call)
         m5_quick    = get_klines(sym, "5m", 50)[:-1]
@@ -654,7 +666,9 @@ def process(sym, cfg: dict):
 
         rsi5_q = (calc_rsi_series(closes_5m_q) or [0])[-1]
         if cfg.get("use_rsi_5m", True) and rsi5_q < cfg["rsi_5m_min"]:
-            with _filter_lock: _filter_counts["f4_rsi5m"] = _filter_counts.get("f4_rsi5m",0)+1
+            with _filter_lock:
+                _filter_counts["f4_rsi5m"] = _filter_counts.get("f4_rsi5m",0)+1
+                _filter_counts["f4_elim_syms"].append(sym)
             return None
 
         # ── B — Stage 2: Fetch all 4 timeframes IN PARALLEL (3 API calls saved)
@@ -683,7 +697,9 @@ def process(sym, cfg: dict):
         rsi1h = (calc_rsi_series(closes_1h) or [0])[-1]
         if cfg.get("use_rsi_1h", True) and \
                 not (cfg["rsi_1h_min"] <= rsi1h <= cfg["rsi_1h_max"]):
-            with _filter_lock: _filter_counts["f7_rsi1h"] = _filter_counts.get("f7_rsi1h",0)+1
+            with _filter_lock:
+                _filter_counts["f7_rsi1h"] = _filter_counts.get("f7_rsi1h",0)+1
+                _filter_counts["f7_elim_syms"].append(sym)
             return None
 
         # ── F8: EMA_Selection — capture actual EMA value at entry ─────────────
@@ -691,19 +707,25 @@ def process(sym, cfg: dict):
         if cfg.get("use_ema_3m"):
             ema = calc_ema(closes_3m, max(2, int(cfg.get("ema_period_3m", 12))))
             if not ema or entry < ema[-1]:
-                with _filter_lock: _filter_counts["f8_ema"] = _filter_counts.get("f8_ema",0)+1
+                with _filter_lock:
+                    _filter_counts["f8_ema"] = _filter_counts.get("f8_ema",0)+1
+                    _filter_counts["f8_elim_syms"].append(sym)
                 return None
             ema_3m_val = round(ema[-1], 6)
         if cfg.get("use_ema_5m"):
             ema = calc_ema(closes_5m, max(2, int(cfg.get("ema_period_5m", 12))))
             if not ema or entry < ema[-1]:
-                with _filter_lock: _filter_counts["f8_ema"] = _filter_counts.get("f8_ema",0)+1
+                with _filter_lock:
+                    _filter_counts["f8_ema"] = _filter_counts.get("f8_ema",0)+1
+                    _filter_counts["f8_elim_syms"].append(sym)
                 return None
             ema_5m_val = round(ema[-1], 6)
         if cfg.get("use_ema_15m"):
             ema = calc_ema(closes_15m, max(2, int(cfg.get("ema_period_15m", 12))))
             if not ema or entry < ema[-1]:
-                with _filter_lock: _filter_counts["f8_ema"] = _filter_counts.get("f8_ema",0)+1
+                with _filter_lock:
+                    _filter_counts["f8_ema"] = _filter_counts.get("f8_ema",0)+1
+                    _filter_counts["f8_elim_syms"].append(sym)
                 return None
             ema_15m_val = round(ema[-1], 6)
 
@@ -713,7 +735,9 @@ def process(sym, cfg: dict):
             if not (macd_bullish(closes_3m) and
                     macd_bullish(closes_5m)  and
                     macd_bullish(closes_15m)):
-                with _filter_lock: _filter_counts["f9_macd"] = _filter_counts.get("f9_macd",0)+1
+                with _filter_lock:
+                    _filter_counts["f9_macd"] = _filter_counts.get("f9_macd",0)+1
+                    _filter_counts["f9_elim_syms"].append(sym)
                 return None
             ml3,  _, _ = calc_macd(closes_3m)
             ml5,  _, _ = calc_macd(closes_5m)
@@ -731,7 +755,9 @@ def process(sym, cfg: dict):
             if not (sar_3m  and sar_3m[-1][1]  and
                     sar_5m  and sar_5m[-1][1]  and
                     sar_15m and sar_15m[-1][1]):
-                with _filter_lock: _filter_counts["f10_sar"] = _filter_counts.get("f10_sar",0)+1
+                with _filter_lock:
+                    _filter_counts["f10_sar"] = _filter_counts.get("f10_sar",0)+1
+                    _filter_counts["f10_elim_syms"].append(sym)
                 return None
             sar_3m_val  = round(sar_3m[-1][0],  6)
             sar_5m_val  = round(sar_5m[-1][0],  6)
@@ -747,7 +773,9 @@ def process(sym, cfg: dict):
                 window   = vols_15m[-(lookback+1):-1]
                 avg_vol  = sum(window)/len(window)
                 if avg_vol <= 0 or vols_15m[-1] < mult * avg_vol:
-                    with _filter_lock: _filter_counts["f11_vol"] = _filter_counts.get("f11_vol",0)+1
+                    with _filter_lock:
+                        _filter_counts["f11_vol"] = _filter_counts.get("f11_vol",0)+1
+                        _filter_counts["f11_elim_syms"].append(sym)
                     return None
                 vol_ratio = round(vols_15m[-1] / avg_vol, 2) if avg_vol > 0 else None
 
@@ -758,6 +786,7 @@ def process(sym, cfg: dict):
             if not pdz_pass:
                 with _filter_lock:
                     _filter_counts["f12_pdz"] = _filter_counts.get("f12_pdz", 0) + 1
+                    _filter_counts["f12_elim_syms"].append(sym)
                 return None
 
         tp      = round(entry * (1 + cfg["tp_pct"]/100), 6)
@@ -767,6 +796,7 @@ def process(sym, cfg: dict):
 
         with _filter_lock:
             _filter_counts["passed"] = _filter_counts.get("passed",0)+1
+            _filter_counts["passed_syms"].append(sym)
 
         rsi5 = (calc_rsi_series(closes_5m) or [rsi5_q])[-1]   # use full-set RSI if available
         criteria = {
@@ -824,6 +854,7 @@ def scan(cfg: dict):
         pre_filtered = list(symbols)   # pre-filter disabled — deep-scan all
     with _filter_lock:
         _filter_counts["pre_filtered_out"] = len(symbols) - len(pre_filtered)
+        _filter_counts["pre_filter_passed_syms"] = list(pre_filtered)
 
     print(f"[Scan] {len(symbols)} valid symbols → "
           f"{len(pre_filtered)} after bulk pre-filter "
@@ -1280,7 +1311,9 @@ if signals:
                              use_container_width=True)
 
 # ── Filter funnel ──────────────────────────────────────────────────────────────
-fc = dict(_filter_counts)
+# Deep-copy under lock so background thread can't mutate lists mid-render
+with _filter_lock:
+    fc = {k: (list(v) if isinstance(v, list) else v) for k, v in _filter_counts.items()}
 if fc.get("total_watchlist", 0) > 0:
     with st.expander("🔬 Last scan filter funnel"):
         total     = fc.get("total_watchlist", 0)
@@ -1341,6 +1374,58 @@ if fc.get("total_watchlist", 0) > 0:
         col_b.metric("Deep scanned 🔬",     checked,   help="Received full multi-timeframe candle analysis")
         col_c.metric("Errors",              fc.get("errors",0))
 
+        # ── Qualified coins table — one row per filter stage ──────────────────
+        st.markdown("#### 🪙 Qualified Coins at Each Stage")
+        st.caption("Shows which coins survived after each filter was applied in the last scan cycle.")
+
+        # Build remaining sets by subtracting eliminated coins stage-by-stage
+        _pre  = set(fc.get("pre_filter_passed_syms", []))
+        _chk  = set(fc.get("checked_syms", []))
+        _f4e  = set(fc.get("f4_elim_syms",  []))
+        _f7e  = set(fc.get("f7_elim_syms",  []))
+        _f8e  = set(fc.get("f8_elim_syms",  []))
+        _f9e  = set(fc.get("f9_elim_syms",  []))
+        _f10e = set(fc.get("f10_elim_syms", []))
+        _f11e = set(fc.get("f11_elim_syms", []))
+        _f12e = set(fc.get("f12_elim_syms", []))
+        _pass = set(fc.get("passed_syms",   []))
+
+        _after_f4  = _chk  - _f4e
+        _after_f7  = _after_f4  - _f7e
+        _after_f8  = _after_f7  - _f8e
+        _after_f9  = _after_f8  - _f9e
+        _after_f10 = _after_f9  - _f10e
+        _after_f11 = _after_f10 - _f11e
+        _after_f12 = _after_f11 - _f12e
+
+        def _coin_str(s: set) -> str:
+            return ", ".join(sorted(s)) if s else "—"
+
+        stage_rows = [
+            ("⚡ After Bulk Pre-filter",        len(_pre),      _coin_str(_pre)),
+            ("🔬 Entered Deep Scan",             len(_chk),      _coin_str(_chk)),
+            (f"After F4 — {f4_lbl}",            len(_after_f4), _coin_str(_after_f4)),
+            (f"After F7 — {f7_lbl}",            len(_after_f7), _coin_str(_after_f7)),
+            (f"After F8 — {ema_lbl}",           len(_after_f8), _coin_str(_after_f8)),
+            (f"After F9 — {macd_lbl}",          len(_after_f9), _coin_str(_after_f9)),
+            (f"After F10 — {sar_lbl}",          len(_after_f10),_coin_str(_after_f10)),
+            (f"After F11 — {vol_lbl}",          len(_after_f11),_coin_str(_after_f11)),
+            (f"After F12 — {pdz_lbl}",          len(_pass),     _coin_str(_pass)),
+        ]
+
+        st.dataframe(
+            [{"Filter Stage": r[0], "Count": r[1], "Qualified Coins": r[2]} for r in stage_rows],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Filter Stage":    st.column_config.TextColumn(width="medium"),
+                "Count":           st.column_config.NumberColumn(width="small"),
+                "Qualified Coins": st.column_config.TextColumn(width="large"),
+            }
+        )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Auto-refresh
 # ─────────────────────────────────────────────────────────────────────────────
 # Auto-refresh
 # ─────────────────────────────────────────────────────────────────────────────
