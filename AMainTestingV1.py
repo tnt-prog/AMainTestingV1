@@ -90,6 +90,7 @@ DEFAULT_CONFIG: dict = {
     "use_vol_spike":      False,
     "vol_spike_mult":     2.0,
     "vol_spike_lookback": 20,
+    "use_pdz":            True,   # F12 — Premium/Discount/Equilibrium zone (5m)
     "watchlist": [
         # ── Top-tier liquid OKX perpetuals ───────────────────────────────────
         "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","ADAUSDT",
@@ -575,6 +576,65 @@ def calc_parabolic_sar(candles: list, af_start=0.02, af_step=0.02, af_max=0.20):
     return result
 
 # ─────────────────────────────────────────────────────────────────────────────
+# F12 — Premium / Discount / Equilibrium zone  (DZSAFM Pine Script logic)
+# ─────────────────────────────────────────────────────────────────────────────
+def calc_pdz_zone(candles: list, price: float) -> tuple:
+    """
+    Compute Smart Money Premium/Discount/Equilibrium zones from up to the last
+    50 candles on a given timeframe (mirrors the DZSAFM TradingView indicator).
+
+    Zone boundaries  (H = swing high, L = swing low over last 50 candles):
+      Premium zone    : price >= 0.95·H + 0.05·L     ← top 5% of range
+      Equilibrium zone: 0.475·H+0.525·L ≤ price ≤ 0.525·H+0.475·L
+      Discount zone   : price ≤ 0.05·H + 0.95·L      ← bottom 5% of range
+
+    Qualification logic (LONG trades only):
+      • Discount zone                         → QUALIFIES  (greatest room to pump)
+      • Equilibrium zone                      → REJECTED   (indecision, risky)
+      • Premium zone                          → REJECTED   (no upward room)
+      • Band A (equil_top < price < prem_bot) → QUALIFIES if room ≥ 3 %
+      • Band B (disc_top  < price < equil_bot)→ QUALIFIES if room ≥ 3 %
+
+    Returns (qualifies: bool, zone_label: str)
+    """
+    if not candles or len(candles) < 2:
+        return True, "unknown"
+
+    lookback = candles[-50:]
+    H = max(c["high"] for c in lookback)
+    L = min(c["low"]  for c in lookback)
+
+    if H <= L:
+        return True, "unknown"
+
+    # Boundary levels  (exact Pine Script maths from DZSAFM)
+    premium_bottom = 0.95 * H + 0.05 * L    # bottom edge of Premium zone
+    equil_top      = 0.525 * H + 0.475 * L  # top edge of Equilibrium zone
+    equil_bottom   = 0.475 * H + 0.525 * L  # bottom edge of Equilibrium zone
+    discount_top   = 0.05  * H + 0.95  * L  # top edge of Discount zone
+
+    if price <= discount_top:
+        # Fully inside Discount zone — best long setup
+        return True, "Discount"
+    elif price >= premium_bottom:
+        # Fully inside Premium zone — no upward room
+        return False, "Premium"
+    elif equil_bottom <= price <= equil_top:
+        # Equilibrium band — can go either way, skip
+        return False, "Equilibrium"
+    elif equil_top < price < premium_bottom:
+        # Band A: between Equilibrium top and Premium bottom
+        room_pct = (premium_bottom - price) / price * 100
+        label    = f"BandA(room:{room_pct:.1f}%)"
+        return (room_pct >= 3.0), label
+    else:
+        # Band B: between Discount top and Equilibrium bottom
+        room_pct = (equil_bottom - price) / price * 100
+        label    = f"BandB(room:{room_pct:.1f}%)"
+        return (room_pct >= 3.0), label
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Filter funnel counter
 # ─────────────────────────────────────────────────────────────────────────────
 def _reset_filter_counts():
@@ -590,6 +650,7 @@ def _reset_filter_counts():
         "f9_macd":          0,
         "f10_sar":          0,
         "f11_vol":          0,
+        "f12_pdz":          0,
         "passed":           0,
         "errors":           0,
     }
@@ -723,6 +784,15 @@ def process(sym, cfg: dict):
                     return None
                 vol_ratio = round(vols_15m[-1] / avg_vol, 2) if avg_vol > 0 else None
 
+        # ── F12: PDZ — Premium / Discount / Equilibrium zone (5m) ───────────
+        pdz_zone = "—"
+        if cfg.get("use_pdz", True):
+            pdz_pass, pdz_zone = calc_pdz_zone(m5, entry)
+            if not pdz_pass:
+                with _filter_lock:
+                    _filter_counts["f12_pdz"] = _filter_counts.get("f12_pdz", 0) + 1
+                return None
+
         tp      = round(entry * (1 + cfg["tp_pct"]/100), 6)
         sl      = round(entry * (1 - cfg["sl_pct"]/100), 6)
         sec     = SECTORS.get(sym, "Other")
@@ -745,6 +815,7 @@ def process(sym, cfg: dict):
             "sar_5m":    sar_5m_val   if cfg.get("use_sar")      else "—",
             "sar_15m":   sar_15m_val  if cfg.get("use_sar")      else "—",
             "vol_ratio": vol_ratio    if cfg.get("use_vol_spike") else "—",
+            "pdz_zone":  pdz_zone     if cfg.get("use_pdz", True) else "—",
             "res_tol":   cfg["resistance_tol_pct"],
         }
 
@@ -996,6 +1067,20 @@ with st.sidebar:
                                          disabled=not new_use_vol_spike)
     st.divider()
 
+    # ── F12: PDZ — Premium / Discount / Equilibrium zones ──────────────────────
+    st.markdown("**🎯 F12 — PDZ — Premium / Discount Zones** (5m)")
+    new_use_pdz = st.checkbox(
+        "Enable PDZ filter",
+        value=bool(_snap_cfg.get("use_pdz", True)), key="cfg_use_pdz",
+        help=(
+            "Uses DZSAFM Smart Money zone logic on 5m candles.\n\n"
+            "✅ Qualifies: Discount zone · BandA ≥3% room · BandB ≥3% room\n"
+            "❌ Rejected:  Equilibrium zone · Premium zone"
+        ))
+    if new_use_pdz:
+        st.caption("✅ Discount · BandA/B ≥3% room | ❌ Premium · Equilibrium")
+    st.divider()
+
     st.markdown("**⏱ Execution**")
     c5, c6 = st.columns(2)
     new_loop = c5.number_input("Loop (min)", min_value=1, max_value=60, step=1, value=int(_snap_cfg["loop_minutes"]),    key="cfg_loop")
@@ -1064,6 +1149,7 @@ with st.sidebar:
             "use_macd": bool(new_use_macd), "use_sar": bool(new_use_sar),
             "use_vol_spike": bool(new_use_vol_spike),
             "vol_spike_mult": float(new_vol_mult), "vol_spike_lookback": int(new_vol_lookback),
+            "use_pdz": bool(new_use_pdz),
             "watchlist": new_wl,
         }
         with _config_lock: _b._bsc_cfg.clear(); _b._bsc_cfg.update(new_cfg)
@@ -1121,6 +1207,7 @@ if _snap_cfg.get("use_macd"):      badges.append("📊 MACD 🟢↑ 3m·5m·15m"
 if _snap_cfg.get("use_sar"):       badges.append("🪂 SAR 3m·5m·15m")
 if _snap_cfg.get("use_vol_spike"): badges.append(
     f"📦 Vol ≥{_snap_cfg.get('vol_spike_mult',2.0)}× / {_snap_cfg.get('vol_spike_lookback',20)} 15m")
+if _snap_cfg.get("use_pdz", True):  badges.append("🎯 PDZ Zones (5m)")
 st.markdown("**Active Filters:**")
 st.caption("  |  ".join(badges) if badges else "No advanced filters enabled")
 st.divider()
@@ -1155,6 +1242,7 @@ if filtered_sorted:
             if v is None or v == "—" or v == "✅": return "—"
             try: return f"{float(v):.6f}".rstrip("0").rstrip(".")
             except (TypeError, ValueError): return str(v)
+        pdz_val  = crit.get("pdz_zone", "—") or "—"
         crit_str    = (
             f"• RSI 5m    : {crit.get('rsi_5m','—')}\n"
             f"• RSI 1h    : {crit.get('rsi_1h','—')}\n"
@@ -1167,7 +1255,8 @@ if filtered_sorted:
             f"• SAR 3m    : {_cv(crit.get('sar_3m'))}\n"
             f"• SAR 5m    : {_cv(crit.get('sar_5m'))}\n"
             f"• SAR 15m   : {_cv(crit.get('sar_15m'))}\n"
-            f"• Vol ×avg  : {_cv(crit.get('vol_ratio'))}"
+            f"• Vol ×avg  : {_cv(crit.get('vol_ratio'))}\n"
+            f"• PDZ Zone  : {pdz_val}"
         ) if crit else "—"
         max_lev   = s.get("max_lev", get_max_leverage(s.get("symbol","")))
         sl_reason = analyze_sl_reason(s) if status=="sl_hit" else "—"
@@ -1255,6 +1344,8 @@ if fc.get("total_watchlist", 0) > 0:
         after_f8  = after_f7  - fc.get("f8_ema",0)
         after_f9  = after_f8  - fc.get("f9_macd",0)
         after_f10 = after_f9  - fc.get("f10_sar",0)
+        after_f11 = after_f10 - fc.get("f11_vol",0)
+        after_f12 = after_f11 - fc.get("f12_pdz",0)
 
         def _lbl(enabled, on_str, off_str="off"):
             return on_str if enabled else f"{on_str.split('—')[0].strip()} ({off_str})"
@@ -1274,6 +1365,7 @@ if fc.get("total_watchlist", 0) > 0:
         sar_lbl  = "F10 SAR 3m·5m·15m"       if _snap_cfg.get("use_sar")  else "F10 SAR (off)"
         vol_lbl  = (f"F11 Vol ≥{_snap_cfg.get('vol_spike_mult',2.0)}× / {_snap_cfg.get('vol_spike_lookback',20)} 15m"
                     if _snap_cfg.get("use_vol_spike") else "F11 Vol (off)")
+        pdz_lbl  = "F12 PDZ Zones (5m)" if _snap_cfg.get("use_pdz", True) else "F12 PDZ (off)"
 
         funnel_data = [
             (f"Watchlist ({total})",  total),
@@ -1286,13 +1378,14 @@ if fc.get("total_watchlist", 0) > 0:
             (f"After {ema_lbl}",      after_f8),
             (f"After {macd_lbl}",     after_f9),
             (f"After {sar_lbl}",      after_f10),
-            (f"After {vol_lbl}",      fc.get("passed",0)),
+            (f"After {vol_lbl}",      after_f11),
+            (f"After {pdz_lbl}",      fc.get("passed",0)),
         ]
         fig_funnel = go.Figure(go.Funnel(
             y=[d[0] for d in funnel_data],
             x=[d[1] for d in funnel_data],
             marker=dict(color=["#1f6feb","#388bfd","#58a6ff","#79c0ff","#a5d6ff",
-                                "#3fb950","#56d364","#d29922","#e3b341","#f0883e","#f85149"]),
+                                "#3fb950","#56d364","#d29922","#e3b341","#f0883e","#c4a01a","#f85149"]),
             textinfo="value+percent initial",
         ))
         fig_funnel.update_layout(
