@@ -89,40 +89,36 @@ DEFAULT_CONFIG: dict = {
     "vol_spike_lookback": 20,
     "use_pdz_5m":            True,   # F3 — PDZ (5m)
     "use_pdz_15m":           True,   # F2 — PDZ (15m)
-    "watchlist": [
-        # ── Top-tier liquid OKX perpetuals ───────────────────────────────────
-        "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","ADAUSDT",
-        "DOGEUSDT","AVAXUSDT","DOTUSDT","LINKUSDT","LTCUSDT","BCHUSDT",
-        "XLMUSDT","TRXUSDT","ATOMUSDT","UNIUSDT","ETCUSDT","NEARUSDT",
-        "APTUSDT","SUIUSDT","INJUSDT","ARBUSDT","OPUSDT","STRKUSDT",
-        "TONUSDT","AAVEUSDT","LDOUSDT","FILUSDT","IMXUSDT","STXUSDT",
-        "ORDIUSDT","WLDUSDT","JUPUSDT","PENDLEUSDT","CRVUSDT","TIAUSDT",
-        "SEIUSDT","TAOUSDT","RENDERUSDT","FETUSDT","HBARUSDT","MANTRAUSDT",
-        "SANDUSDT","GALAUSDT","AXSUSDT","APEUSDT","GRTUSDT","ENAUSDT",
-        "POLUSDT","ZKUSDT","DYDXUSDT","SNXUSDT","COMPUSDT","ARUSDT",
-        "KASUSDT","VETUSDT","ICPUSDT","MANAUSDT","ALICEUSDT","ALGOUSDT",
-        # ── Mid-cap OKX perpetuals ────────────────────────────────────────────
-        "SOLUSDT","WIFUSDT","JUPUSDT","BONKUSDT","PYTHUSDT","JITOSOL",
-        "MEMEUSDT","BOMEUSDT","1000PEPEUSDT","1000SHIBUSDT","1000BONKUSDT",
-        "1000FLOKIUSDT","TURBOUSDT","NEIROUSDT","FARTCOINUSDT",
-        "XMRUSDT","ZECUSDT","DASHUSDT","DUSKUSDT","POLYXUSDT",
-        "LUNA2USDT","STGUSDT","CAKEUSDT","1INCHUSDT","MORPHOUSDT",
-        "AEROUSDT","ONDOUSDT","EIGENUSDT","ENAUSDT","CHZUSDT",
-        "TRUMPUSDT","KAVAUSDT","API3USDT","PEOPLEUSDT","JTOUSDT",
-        "TRBUSDT","ENSUSDT","QNTUSDT","ZILUSDT","ANKRUSDT",
-        "ROSEUSDT","FLOWUSDT","AXLUSDT","YGGUSDT","INJUSDT",
-        "CYBERUSDT","AUCTIONUSDT","CFXUSDT","JASMYUSDT","CRVUSDT",
-        "WLDUSDT","ZKUSDT","LINEAUSDT","TOKENUSDT","WUSDT",
-        "MOVEUSDT","INITUSDT","ENJUSDT","DENTUSDT","SYNUSDT",
-        "ZROUSDT","SEIUSDT","ALGOUSDT","NAORISUSDT","ONTUSDT",
-        "ARKMUSDT","VIRTUALUSDT","AIXBTUSDT","GRTUSDT","AGLDUSDT",
-        "AIAUSDT","SKYAIUSDT","DEEPUSDT","VVVUSDT","ATUSDT",
-        "HYPEUSDT","GRASSUSDT","KAITOUSDT","OMUSDT","IPUSDT",
-        "ZORAUSDT","SPXUSDT","AKTUSDT","PNUTUSDT","WAXPUSDT",
-        "PENGUUSDT","TNSRUSDT","WLFIUSDT","MOODENGUSDT","ACXUSDT",
-        "GALAUSDT","APTUSDT","MEUSDT","COLLECTUSDT","LDOUSDT",
-        "GUNUSDT","SKYUSDT","SYRUPUSDT","ALLOUSDT","LITUSDT",
-        "NEOUSDT","REZUSDT","ARCUSDT","KERNELUSDT","PLUMEUSDT",
+        "watchlist": [
+        "XPDUSDT","WIFUSDT","PIUSDT","EDGEUSDT","RECALLUSDT","SUSHIUSDT","RAVEUSDT","XLMUSDT","DASHUSDT","TRUSTUSDT",
+        "GPSUSDT","CROUSDT","ACUUSDT","UNIUSDT","STRKUSDT","NEIROUSDT","ZKPUSDT","APEUSDT","MSTRUSDT","ENJUSDT",
+        "INJUSDT","RAYUSDT","OLUSDT","HUSDT","OKBUSDT","APTUSDT","WCTUSDT","NEOUSDT","SNXUSDT","LITUSDT",
+        "WUSDT","SYRUPUSDT","AVAXUSDT","LPTUSDT","ACTUSDT","FLOKIUSDT","MSFTUSDT","MEMEUSDT","DOGEUSDT","KGENUSDT",
+        "MOODENGUSDT","NOTUSDT","XCUUSDT","AEROUSDT","STXUSDT","GIGGLEUSDT","AUCTIONUSDT","WALUSDT","ETHUSDT","SHIBUSDT",
+        "ZROUSDT","GMXUSDT","LAYERUSDT","ARBUSDT","MINAUSDT","IMXUSDT","LINEAUSDT","PUMPUSDT","VANAUSDT","FOGOUSDT",
+        "BASEDUSDT","ZBTUSDT","KITEUSDT","XTZUSDT","SUIUSDT","ATHUSDT","AIXBTUSDT","TRIAUSDT","PIPPINUSDT","ANIMEUSDT",
+        "PEPEUSDT","LRCUSDT","DYDXUSDT","LAUSDT","GLMUSDT","CHZUSDT","ACHUSDT","INITUSDT","PLUMEUSDT","BCHUSDT",
+        "BLURUSDT","SENTUSDT","ALLOUSDT","XPTUSDT","QQQUSDT","YGGUSDT","AAVEUSDT","METISUSDT","ZAMAUSDT","ZKUSDT",
+        "MERLUSDT","EGLDUSDT","AVNTUSDT","HMSTRUSDT","AGLDUSDT","ONTUSDT","ALGOUSDT","ADAUSDT","TRUMPUSDT","MEUSDT",
+        "NFLXUSDT","GALAUSDT","BONKUSDT","LUNAUSDT","XAGUSDT","TRXUSDT","BEATUSDT","BABYUSDT","EDENUSDT","PNUTUSDT",
+        "BICOUSDT","IWMUSDT","ICPUSDT","METAUSDT","BANDUSDT","LDOUSDT","OFCUSDT","SATSUSDT","ZRXUSDT","ZECUSDT",
+        "MORPHOUSDT","QTUMUSDT","SPACEUSDT","SIGNUSDT","AMZNUSDT","TRUTHUSDT","YFIUSDT","1INCHUSDT","BRETTUSDT","SOLUSDT",
+        "RIVERUSDT","FARTCOINUSDT","API3USDT","DOTUSDT","HOODUSDT","JELLYJELLYUSDT","STABLEUSDT","FUSDT","DOODUSDT","COAIUSDT",
+        "WLFIUSDT","USDCUSDT","IPUSDT","ATUSDT","WLDUSDT","LQTYUSDT","IOTAUSDT","TRBUSDT","RVNUSDT","ORCLUSDT",
+        "KSMUSDT","CFXUSDT","SOPHUSDT","BARDUSDT","UMAUSDT","ZENUSDT","2ZUSDT","YBUSDT","CRCLUSDT","RENDERUSDT",
+        "JUPUSDT","MAGICUSDT","TURBOUSDT","ORDIUSDT","PYTHUSDT","ETCUSDT","MEWUSDT","CRVUSDT","MUBARAKUSDT","BIGTIMEUSDT",
+        "ORDERUSDT","VIRTUALUSDT","INTCUSDT","THETAUSDT","ONDOUSDT","LTCUSDT","SPKUSDT","AUSDT","ROBOUSDT","EWJUSDT",
+        "ASTERUSDT","BREVUSDT","IOSTUSDT","BTCUSDT","EWYUSDT","BNBUSDT","SAHARAUSDT","MONUSDT","AAPLUSDT","RSRUSDT",
+        "SPYUSDT","KAITOUSDT","LINKUSDT","NMRUSDT","CRWVUSDT","TSLAUSDT","XPLUSDT","COMPUSDT","ENAUSDT","CCUSDT",
+        "USELESSUSDT","PLTRUSDT","RLSUSDT","HOMEUSDT","GRTUSDT","LIGHTUSDT","KATUSDT","LABUSDT","JTOUSDT","FILUSDT",
+        "TIAUSDT","MUUSDT","SKYUSDT","ENSUSDT","NVDAUSDT","BOMEUSDT","PIEVERSEUSDT","0GUSDT","GASUSDT","SEIUSDT",
+        "OPUSDT","AMDUSDT","BIOUSDT","COREUSDT","MOVEUSDT","NGUSDT","GRASSUSDT","KMNOUSDT","SAPIENUSDT","OPNUSDT",
+        "TONUSDT","ATOMUSDT","ETHWUSDT","ONEUSDT","COINUSDT","ESPUSDT","XAUUSDT","NIGHTUSDT","BSBUSDT","PENGUUSDT",
+        "ETHFIUSDT","SSVUSDT","CVXUSDT","RESOLVUSDT","UPUSDT","METUSDT","SANDUSDT","CELOUSDT","SNDKUSDT","MANAUSDT",
+        "POPCATUSDT","TAOUSDT","ARUSDT","FLOWUSDT","SUSDT","AZTECUSDT","ARKMUSDT","WETUSDT","HUMAUSDT","APRUSDT",
+        "AEVOUSDT","CLUSDT","BATUSDT","ZORAUSDT","BERAUSDT","TSMUSDT","HYPEUSDT","WOOUSDT","PEOPLEUSDT","PENDLEUSDT",
+        "SOONUSDT","MMTUSDT","EIGENUSDT","POLUSDT","PROVEUSDT","GMTUSDT","ZILUSDT","PARTIUSDT","MASKUSDT","ENSOUSDT",
+        "BZUSDT","NEARUSDT","SHELLUSDT","ZETAUSDT","GOOGLUSDT","XRPUSDT","HBARUSDT","ICXUSDT","SPXUSDT","AXSUSDT",
     ],
 }
 
@@ -566,9 +562,9 @@ def calc_parabolic_sar(candles: list, af_start=0.02, af_step=0.02, af_max=0.20):
 def calc_pdz_zone(candles: list, price: float) -> tuple:
     """
     Compute Smart Money Premium/Discount/Equilibrium zones from up to the last
-    50 candles on a given timeframe (mirrors the DZSAFM TradingView indicator).
+    150 candles on a given timeframe (mirrors the DZSAFM TradingView indicator).
 
-    Zone boundaries  (H = swing high, L = swing low over last 50 candles):
+    Zone boundaries  (H = swing high, L = swing low over last 150 candles):
       Premium zone    : price >= 0.95·H + 0.05·L     ← top 5% of range
       Equilibrium zone: 0.475·H+0.525·L ≤ price ≤ 0.525·H+0.475·L
       Discount zone   : price ≤ 0.05·H + 0.95·L      ← bottom 5% of range
@@ -585,7 +581,7 @@ def calc_pdz_zone(candles: list, price: float) -> tuple:
     if not candles or len(candles) < 2:
         return True, "unknown"
 
-    lookback = candles[-50:]
+    lookback = candles[-150:]
     H = max(c["high"] for c in lookback)
     L = min(c["low"]  for c in lookback)
 
@@ -677,8 +673,8 @@ def process(sym, cfg: dict):
 
         # ── Stage 1: Quick parallel fetch — 5m (entry/RSI) + 15m (PDZ) ───────
         with ThreadPoolExecutor(max_workers=2) as pool:
-            f_5m_q  = pool.submit(get_klines, sym, "5m",  50)
-            f_15m_q = pool.submit(get_klines, sym, "15m", 51)
+            f_5m_q  = pool.submit(get_klines, sym, "5m",  151)
+            f_15m_q = pool.submit(get_klines, sym, "15m", 151)
             m5_quick  = f_5m_q.result()[:-1]
             m15_quick = f_15m_q.result()[:-1]
 
