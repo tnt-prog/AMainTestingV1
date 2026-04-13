@@ -596,6 +596,9 @@ def calc_pdz_zone(candles: list, price: float) -> tuple:
     equil_bottom   = 0.475 * H + 0.525 * L  # bottom edge of Equilibrium zone
     discount_top   = 0.05  * H + 0.95  * L  # top edge of Discount zone
 
+    band_a_ceil = premium_bottom * (1 - 0.015)   # 1.5% below Premium boundary
+    band_b_ceil = equil_bottom   * (1 - 0.015)   # 1.5% below Equilibrium boundary
+
     if price <= discount_top:
         # Fully inside Discount zone — best long setup
         return True, "Discount"
@@ -606,15 +609,15 @@ def calc_pdz_zone(candles: list, price: float) -> tuple:
         # Equilibrium band — can go either way, skip
         return False, "Equilibrium"
     elif equil_top < price < premium_bottom:
-        # Band A: between Equilibrium top and Premium bottom
-        room_pct = (premium_bottom - price) / price * 100
-        label    = f"BandA(room:{room_pct:.1f}%)"
-        return (room_pct >= 1.5), label
+        # Band A: qualifies only if price is at least 1.5% below the Premium boundary
+        dist_pct = (premium_bottom - price) / premium_bottom * 100
+        label    = f"BandA({dist_pct:.1f}%\u2193Prem)"
+        return (price <= band_a_ceil), label
     else:
-        # Band B: between Discount top and Equilibrium bottom
-        room_pct = (equil_bottom - price) / price * 100
-        label    = f"BandB(room:{room_pct:.1f}%)"
-        return (room_pct >= 1.5), label
+        # Band B: qualifies only if price is at least 1.5% below the Equilibrium boundary
+        dist_pct = (equil_bottom - price) / equil_bottom * 100
+        label    = f"BandB({dist_pct:.1f}%\u2193Equil)"
+        return (price <= band_b_ceil), label
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1139,7 +1142,7 @@ with st.sidebar:
             "❌ Rejected:  Equilibrium (indecision) · Premium (no upward room)"
         ))
     if new_use_pdz_5m:
-        st.caption("✅ Discount · BandA/B ≥1.5% room | ❌ Premium · Equilibrium")
+        st.caption("✅ Discount · BandA(≥1.5%↓Premium) · BandB(≥1.5%↓Equilibrium) | ❌ Premium · Equilibrium")
     st.divider()
 
     # ── F9: PDZ 15m ────────────────────────────────────────────────────────────
@@ -1156,7 +1159,7 @@ with st.sidebar:
             "❌ Rejected:  Equilibrium (indecision) · Premium (no upward room)"
         ))
     if new_use_pdz_15m:
-        st.caption("✅ Discount · BandA/B ≥1.5% room | ❌ Premium · Equilibrium")
+        st.caption("✅ Discount · BandA(≥1.5%↓Premium) · BandB(≥1.5%↓Equilibrium) | ❌ Premium · Equilibrium")
     st.divider()
 
     st.markdown("**⏱ Execution**")
