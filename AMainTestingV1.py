@@ -602,7 +602,7 @@ def calc_pdz_zone(candles: list, price: float) -> tuple:
     if not candles or len(candles) < 2:
         return True, "unknown"
 
-    lookback = candles[-50:]
+    lookback = candles[-300:]  # 300 candles — ~75 hrs on 15m, ~25 hrs on 5m
     H = max(c["high"] for c in lookback)
     L = min(c["low"]  for c in lookback)
 
@@ -694,8 +694,8 @@ def process(sym, cfg: dict):
 
         # ── Stage 1: Quick parallel fetch — 5m (entry/RSI) + 15m (PDZ) ───────
         with ThreadPoolExecutor(max_workers=2) as pool:
-            f_5m_q  = pool.submit(get_klines, sym, "5m",  151)
-            f_15m_q = pool.submit(get_klines, sym, "15m", 151)
+            f_5m_q  = pool.submit(get_klines, sym, "5m",  301)
+            f_15m_q = pool.submit(get_klines, sym, "15m", 301)
             m5_quick  = f_5m_q.result()[:-1]
             m15_quick = f_15m_q.result()[:-1]
 
