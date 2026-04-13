@@ -583,9 +583,9 @@ def calc_parabolic_sar(candles: list, af_start=0.02, af_step=0.02, af_max=0.20):
 def calc_pdz_zone(candles: list, price: float) -> tuple:
     """
     Compute Smart Money Premium/Discount/Equilibrium zones from up to the last
-    150 candles on a given timeframe (mirrors the DZSAFM TradingView indicator).
+    50 candles on a given timeframe (mirrors the DZSAFM TradingView indicator exactly).
 
-    Zone boundaries  (H = swing high, L = swing low over last 150 candles):
+    Zone boundaries  (H = swing high, L = swing low over last 50 candles):
       Premium zone    : price >= 0.95·H + 0.05·L     ← top 5% of range
       Equilibrium zone: 0.475·H+0.525·L ≤ price ≤ 0.525·H+0.475·L
       Discount zone   : price ≤ 0.05·H + 0.95·L      ← bottom 5% of range
@@ -602,7 +602,7 @@ def calc_pdz_zone(candles: list, price: float) -> tuple:
     if not candles or len(candles) < 2:
         return True, "unknown"
 
-    lookback = candles[-150:]
+    lookback = candles[-50:]
     H = max(c["high"] for c in lookback)
     L = min(c["low"]  for c in lookback)
 
