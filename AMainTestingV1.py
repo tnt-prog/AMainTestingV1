@@ -9,7 +9,7 @@ Performance improvements:
   + API semaphore             — hard cap of 8 concurrent HTTP requests (no exchange blocking)
 """
 
-import json, os, pathlib, threading, time, uuid, traceback
+import json, math, os, pathlib, threading, time, uuid, traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 
@@ -180,8 +180,15 @@ def analyze_sl_reason(sig: dict) -> str:
     if not criteria:
         return "No criteria data captured"
     reasons = []
-    rsi_5m  = criteria.get("rsi_5m", 50)
-    rsi_1h  = criteria.get("rsi_1h", 50)
+    # Safely convert — Super Setup signals store "—" for unused criteria
+    try:
+        rsi_5m = float(criteria.get("rsi_5m", 50))
+    except (TypeError, ValueError):
+        rsi_5m = 50.0
+    try:
+        rsi_1h = float(criteria.get("rsi_1h", 50))
+    except (TypeError, ValueError):
+        rsi_1h = 50.0
     if rsi_5m < 35:
         reasons.append(f"RSI 5m very low at entry ({rsi_5m}) — momentum already fading")
     elif rsi_5m < 42:
@@ -470,6 +477,20 @@ def get_klines(sym: str, interval: str, limit: int) -> list:
 # ─────────────────────────────────────────────────────────────────────────────
 # Technical indicators
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _pround(x, sig=6):
+    """Round price to `sig` significant figures — handles micro-priced tokens.
+    Prevents ultra-low prices (e.g. SATS at 0.000000003) from rounding to 0."""
+    try:
+        x = float(x)
+        if x == 0:
+            return 0.0
+        magnitude = math.floor(math.log10(abs(x)))
+        decimals  = max(2, sig - int(magnitude))
+        return round(x, decimals)
+    except Exception:
+        return x
+
 def calc_rsi_series(closes, period=14):
     if len(closes) < period + 2: return []
     deltas = [closes[i]-closes[i-1] for i in range(1, len(closes))]
@@ -679,7 +700,7 @@ def process(sym, cfg: dict):
             m15_quick = f_15m_q.result()[:-1]
 
         closes_5m_q = [c["close"] for c in m5_quick]
-        entry_q     = round(m5_quick[-1]["close"], 6)
+        entry_q     = _pround(m5_quick[-1]["close"])
 
         # ── F2: PDZ 15m — checked FIRST (Super Setup possible) ───────────────
         pdz_zone_15m   = "—"
@@ -697,8 +718,8 @@ def process(sym, cfg: dict):
 
         # ── SUPER SETUP — 15m Discount → instant trade, no further checks ─────
         if is_super_setup:
-            tp      = round(entry_q * (1 + cfg["tp_pct"] / 100), 6)
-            sl      = round(entry_q * (1 - cfg["sl_pct"] / 100), 6)
+            tp      = _pround(entry_q * (1 + cfg["tp_pct"] / 100))
+            sl      = _pround(entry_q * (1 - cfg["sl_pct"] / 100))
             sec     = SECTORS.get(sym, "Other")
             max_lev = get_max_leverage(sym)
             with _filter_lock:
@@ -767,7 +788,7 @@ def process(sym, cfg: dict):
         closes_15m = [c["close"] for c in m15]
         closes_3m  = [c["close"] for c in m3_candles]
         closes_1h  = [c["close"] for c in m1h_candles]
-        entry      = round(m5[-1]["close"], 6)
+        entry      = _pround(m5[-1]["close"])
 
         # ── F5: 1h RSI ────────────────────────────────────────────────────────
         rsi1h = (calc_rsi_series(closes_1h) or [0])[-1]
@@ -787,7 +808,7 @@ def process(sym, cfg: dict):
                     _filter_counts["f6_ema"] = _filter_counts.get("f6_ema", 0) + 1
                     _filter_counts["f6_elim_syms"].append(sym)
                 return None
-            ema_3m_val = round(ema[-1], 6)
+            ema_3m_val = _pround(ema[-1])
         if cfg.get("use_ema_5m"):
             ema = calc_ema(closes_5m, max(2, int(cfg.get("ema_period_5m", 12))))
             if not ema or entry < ema[-1]:
@@ -795,7 +816,7 @@ def process(sym, cfg: dict):
                     _filter_counts["f6_ema"] = _filter_counts.get("f6_ema", 0) + 1
                     _filter_counts["f6_elim_syms"].append(sym)
                 return None
-            ema_5m_val = round(ema[-1], 6)
+            ema_5m_val = _pround(ema[-1])
         if cfg.get("use_ema_15m"):
             ema = calc_ema(closes_15m, max(2, int(cfg.get("ema_period_15m", 12))))
             if not ema or entry < ema[-1]:
@@ -803,7 +824,7 @@ def process(sym, cfg: dict):
                     _filter_counts["f6_ema"] = _filter_counts.get("f6_ema", 0) + 1
                     _filter_counts["f6_elim_syms"].append(sym)
                 return None
-            ema_15m_val = round(ema[-1], 6)
+            ema_15m_val = _pround(ema[-1])
 
         # ── F7: MACD dark-green ───────────────────────────────────────────────
         macd_3m_val = macd_5m_val = macd_15m_val = None
@@ -835,9 +856,9 @@ def process(sym, cfg: dict):
                     _filter_counts["f8_sar"] = _filter_counts.get("f8_sar", 0) + 1
                     _filter_counts["f8_elim_syms"].append(sym)
                 return None
-            sar_3m_val  = round(sar_3m[-1][0],  6)
-            sar_5m_val  = round(sar_5m[-1][0],  6)
-            sar_15m_val = round(sar_15m[-1][0], 6)
+            sar_3m_val  = _pround(sar_3m[-1][0])
+            sar_5m_val  = _pround(sar_5m[-1][0])
+            sar_15m_val = _pround(sar_15m[-1][0])
 
         # ── F9: Volume Spike ──────────────────────────────────────────────────
         vol_ratio = None
@@ -856,8 +877,8 @@ def process(sym, cfg: dict):
                 vol_ratio = round(vols_15m[-1] / avg_vol, 2) if avg_vol > 0 else None
 
         # ── All filters passed ────────────────────────────────────────────────
-        tp      = round(entry * (1 + cfg["tp_pct"] / 100), 6)
-        sl      = round(entry * (1 - cfg["sl_pct"] / 100), 6)
+        tp      = _pround(entry * (1 + cfg["tp_pct"] / 100))
+        sl      = _pround(entry * (1 - cfg["sl_pct"] / 100))
         sec     = SECTORS.get(sym, "Other")
         max_lev = get_max_leverage(sym)
 
@@ -1420,9 +1441,9 @@ if filtered_sorted:
     st.dataframe(rows, use_container_width=True, hide_index=True,
                  column_config={
                      "Setup":          st.column_config.TextColumn(width="small"),
-                     "Entry":          st.column_config.NumberColumn(format="%.6f"),
-                     "TP":             st.column_config.NumberColumn(format="%.6f"),
-                     "SL":             st.column_config.NumberColumn(format="%.6f"),
+                     "Entry":          st.column_config.NumberColumn(format="%.8f"),
+                     "TP":             st.column_config.NumberColumn(format="%.8f"),
+                     "SL":             st.column_config.NumberColumn(format="%.8f"),
                      "Entry Criteria": st.column_config.TextColumn(width="medium"),
                      "⚠️ SL Reason":  st.column_config.TextColumn(width="medium"),
                      "Max Lev":        st.column_config.TextColumn(width="small"),
