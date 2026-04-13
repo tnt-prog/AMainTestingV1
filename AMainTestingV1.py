@@ -982,8 +982,11 @@ def _bg_loop():
             new_sigs, errors = scan(cfg)
             cutoff = dubai_now() - timedelta(minutes=cfg["cooldown_minutes"])
             with _log_lock:
+                # Cooldown measured from close_time of last closed trade (TP/SL hit)
                 cooled = {s["symbol"] for s in _b._bsc_log["signals"]
-                          if datetime.fromisoformat(s["timestamp"].replace("Z","+00:00")) >= cutoff}
+                          if s.get("close_time")
+                          and s.get("status") in ("tp_hit", "sl_hit")
+                          and datetime.fromisoformat(s["close_time"].replace("Z","+00:00")) >= cutoff}
                 active = {s["symbol"] for s in _b._bsc_log["signals"] if s["status"]=="open"}
                 skip   = cooled | active
                 for sig in new_sigs:
@@ -1017,7 +1020,7 @@ def _ensure_scanner():
 # ─────────────────────────────────────────────────────────────────────────────
 # STREAMLIT UI
 # ─────────────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="OKX Futures Scanner v2", page_icon="🔍",
+st.set_page_config(page_title="Crypto SMC Scanner", page_icon="🔍",
                    layout="wide", initial_sidebar_state="expanded")
 _ensure_scanner()
 
@@ -1063,7 +1066,43 @@ with st.sidebar:
         st.caption("✅ Vol ≥ 100k USDT · Price ≥ 24h Low × 1.005")
     st.divider()
 
-    # ── F2: 5m RSI ─────────────────────────────────────────────────────────────
+    # ── F2: PDZ 15m ────────────────────────────────────────────────────────────
+    st.markdown("**🎯 F2 — PDZ Zones** (15m)")
+    new_use_pdz_15m = st.checkbox(
+        "Enable F2 — PDZ Filter (15m)",
+        value=bool(_snap_cfg.get("use_pdz_15m", True)), key="cfg_use_pdz_15m",
+        help=(
+            "F2 — Premium / Discount / Equilibrium Zone Filter (15m)\n\n"
+            "Same DZSAFM zone logic as F3, applied to last 50 × 15m candles.\n\n"
+            "Passing both F3 (5m) and F2 (15m) confirms the coin is in a\n"
+            "favourable Smart Money zone on both timeframes simultaneously.\n\n"
+            "✅ Qualifies: Discount zone · Band A/B with ≥1.5% room to next zone\n"
+            "❌ Rejected:  Equilibrium (indecision) · Premium (no upward room)"
+        ))
+    if new_use_pdz_15m:
+        st.caption("✅ Discount · BandA(≥1.5%↓Premium) · BandB(≥1.5%↓Equilibrium) | ❌ Premium · Equilibrium")
+    st.divider()
+
+    # ── F3: PDZ 5m ─────────────────────────────────────────────────────────────
+    st.markdown("**🎯 F3 — PDZ Zones** (5m)")
+    new_use_pdz_5m = st.checkbox(
+        "Enable F3 — PDZ Filter (5m)",
+        value=bool(_snap_cfg.get("use_pdz_5m", True)), key="cfg_use_pdz_5m",
+        help=(
+            "F3 — Premium / Discount / Equilibrium Zone Filter (5m)\n\n"
+            "DZSAFM Smart Money zones on last 50 × 5m candles.\n"
+            "Zones from swing High (H) and Low (L):\n"
+            "  Premium bottom = 0.95×H + 0.05×L\n"
+            "  Equilibrium    = middle band around midpoint\n"
+            "  Discount top   = 0.05×H + 0.95×L\n\n"
+            "✅ Qualifies: Discount zone · Band A/B with ≥1.5% room to next zone\n"
+            "❌ Rejected:  Equilibrium (indecision) · Premium (no upward room)"
+        ))
+    if new_use_pdz_5m:
+        st.caption("✅ Discount · BandA(≥1.5%↓Premium) · BandB(≥1.5%↓Equilibrium) | ❌ Premium · Equilibrium")
+    st.divider()
+
+    # ── F4: 5m RSI ─────────────────────────────────────────────────────────────
     st.markdown("**📈 F4 — 5m RSI**")
     new_use_rsi_5m = st.checkbox(
         "Enable F4 — 5m RSI",
@@ -1079,7 +1118,7 @@ with st.sidebar:
                                     disabled=not new_use_rsi_5m)
     st.divider()
 
-    # ── F3: 1h RSI ─────────────────────────────────────────────────────────────
+    # ── F5: 1h RSI ─────────────────────────────────────────────────────────────
     st.markdown("**📈 F5 — 1h RSI**")
     new_use_rsi_1h = st.checkbox(
         "Enable F5 — 1h RSI",
@@ -1099,7 +1138,7 @@ with st.sidebar:
                                      disabled=not new_use_rsi_1h)
     st.divider()
 
-    # ── F4: EMA Selection ──────────────────────────────────────────────────────
+    # ── F6: EMA Selection ──────────────────────────────────────────────────────
     st.markdown("**📉 F6 — EMA Selection** (price must be above EMA)",
                 help=(
                     "F6 — EMA Selection Filter\n\n"
@@ -1128,7 +1167,7 @@ with st.sidebar:
                                           label_visibility="collapsed")
     st.divider()
 
-    # ── F5: MACD ───────────────────────────────────────────────────────────────
+    # ── F7: MACD ───────────────────────────────────────────────────────────────
     st.markdown("**📊 F7 — MACD** (dark 🟢 histogram, 3m·5m·15m)")
     new_use_macd = st.checkbox(
         "Enable F7 — MACD filter",
@@ -1145,7 +1184,7 @@ with st.sidebar:
     if new_use_macd: st.caption("✅ MACD>0 · Signal>0 · Histogram 🟢↑ · Crossover within 12 candles")
     st.divider()
 
-    # ── F6: Parabolic SAR ──────────────────────────────────────────────────────
+    # ── F8: Parabolic SAR ──────────────────────────────────────────────────────
     st.markdown("**🪂 F8 — Parabolic SAR** (3m·5m·15m)")
     new_use_sar = st.checkbox(
         "Enable F8 — SAR filter",
@@ -1159,7 +1198,7 @@ with st.sidebar:
     if new_use_sar: st.caption("✅ SAR below price on 3m · 5m · 15m")
     st.divider()
 
-    # ── F7: Volume Spike ───────────────────────────────────────────────────────
+    # ── F9: Volume Spike ───────────────────────────────────────────────────────
     st.markdown("**📦 F9 — Volume Spike** (15m)")
     new_use_vol_spike = st.checkbox(
         "Enable F9 — Volume Spike",
@@ -1178,42 +1217,6 @@ with st.sidebar:
     new_vol_lookback = vx2.number_input("Lookback (N)", min_value=2, max_value=100, step=1,
                                          value=int(_snap_cfg.get("vol_spike_lookback",20)), key="cfg_vol_lookback",
                                          disabled=not new_use_vol_spike)
-    st.divider()
-
-    # ── F8: PDZ 5m ─────────────────────────────────────────────────────────────
-    st.markdown("**🎯 F3 — PDZ Zones** (5m)")
-    new_use_pdz_5m = st.checkbox(
-        "Enable F3 — PDZ Filter (5m)",
-        value=bool(_snap_cfg.get("use_pdz_5m", True)), key="cfg_use_pdz_5m",
-        help=(
-            "F3 — Premium / Discount / Equilibrium Zone Filter (5m)\n\n"
-            "DZSAFM Smart Money zones on last 50 × 5m candles.\n"
-            "Zones from swing High (H) and Low (L):\n"
-            "  Premium bottom = 0.95×H + 0.05×L\n"
-            "  Equilibrium    = middle band around midpoint\n"
-            "  Discount top   = 0.05×H + 0.95×L\n\n"
-            "✅ Qualifies: Discount zone · Band A/B with ≥1.5% room to next zone\n"
-            "❌ Rejected:  Equilibrium (indecision) · Premium (no upward room)"
-        ))
-    if new_use_pdz_5m:
-        st.caption("✅ Discount · BandA(≥1.5%↓Premium) · BandB(≥1.5%↓Equilibrium) | ❌ Premium · Equilibrium")
-    st.divider()
-
-    # ── F9: PDZ 15m ────────────────────────────────────────────────────────────
-    st.markdown("**🎯 F2 — PDZ Zones** (15m)")
-    new_use_pdz_15m = st.checkbox(
-        "Enable F2 — PDZ Filter (15m)",
-        value=bool(_snap_cfg.get("use_pdz_15m", True)), key="cfg_use_pdz_15m",
-        help=(
-            "F2 — Premium / Discount / Equilibrium Zone Filter (15m)\n\n"
-            "Same DZSAFM zone logic as F3, applied to last 50 × 15m candles.\n\n"
-            "Passing both F3 (5m) and F2 (15m) confirms the coin is in a\n"
-            "favourable Smart Money zone on both timeframes simultaneously.\n\n"
-            "✅ Qualifies: Discount zone · Band A/B with ≥1.5% room to next zone\n"
-            "❌ Rejected:  Equilibrium (indecision) · Premium (no upward room)"
-        ))
-    if new_use_pdz_15m:
-        st.caption("✅ Discount · BandA(≥1.5%↓Premium) · BandB(≥1.5%↓Equilibrium) | ❌ Premium · Equilibrium")
     st.divider()
 
     st.markdown("**⏱ Execution**")
@@ -1297,7 +1300,7 @@ with st.sidebar:
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN AREA
 # ─────────────────────────────────────────────────────────────────────────────
-st.title("🔍 OKX Futures Scanner  v2")
+st.title("🔍 Crypto SMC Scanner")
 
 last_scan = health.get("last_scan_at", "never")
 if last_scan and last_scan != "never":
