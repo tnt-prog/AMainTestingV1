@@ -1268,6 +1268,9 @@ with st.sidebar:
                                        "last_scan_duration_s":0.0,"total_api_errors":0,
                                        "watchlist_size":0,"pre_filtered_out":0,"deep_scanned":0}
             save_log(_b._bsc_log)
+        # Also clear the filter funnel so it doesn't show stale data
+        _filter_counts.clear()
+        _b._bsc_filter_counts = {}
         st.success("✅ Flushed"); st.rerun()
 
     cd1, cd2 = st.columns(2)
