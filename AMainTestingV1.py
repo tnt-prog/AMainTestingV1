@@ -71,7 +71,7 @@ DEFAULT_CONFIG: dict = {
     "use_pre_filter":       True,   # Bulk ticker pre-filter (volume / change / low)
     "use_rsi_5m":           True,   # F4 — 5m RSI
     "rsi_5m_min":           30,
-    "use_rsi_1h":           True,   # F7 — 1h RSI
+    "use_rsi_1h":           True,   # F5 — 1h RSI
     "rsi_1h_min":           30,
     "rsi_1h_max":           95,
     "loop_minutes":         5,
@@ -87,8 +87,8 @@ DEFAULT_CONFIG: dict = {
     "use_vol_spike":      False,
     "vol_spike_mult":     2.0,
     "vol_spike_lookback": 20,
-    "use_pdz_5m":            True,   # F8 — Premium/Discount/Equilibrium zone (5m)
-    "use_pdz_15m":           True,   # F9 — Premium/Discount/Equilibrium zone (15m)
+    "use_pdz_5m":            True,   # F3 — PDZ (5m)
+    "use_pdz_15m":           True,   # F2 — PDZ (15m)
     "watchlist": [
         # ── Top-tier liquid OKX perpetuals ───────────────────────────────────
         "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","ADAUSDT",
@@ -301,6 +301,7 @@ if "_scanner_initialised" not in st.session_state:
         _b._bsc_filter_counts = {}
         _b._bsc_filter_lock   = threading.Lock()
         _b._bsc_last_error    = ""
+        _b._bsc_rescan_event  = threading.Event()   # set to skip sleep & rescan immediately
         # D — symbol cache
         _b._bsc_symbol_cache  = {"symbols": [], "fetched_at": 0, "wl_key": ""}
     st.session_state["_scanner_initialised"] = True
@@ -312,6 +313,7 @@ _log_lock        = _b._bsc_log_lock
 _scanner_running = _b._bsc_running
 _filter_lock     = _b._bsc_filter_lock
 _filter_counts   = _b._bsc_filter_counts
+_rescan_event    = _b._bsc_rescan_event
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HTTP helpers  (+semaphore rate limiter)
@@ -623,33 +625,41 @@ def calc_pdz_zone(candles: list, price: float) -> tuple:
 # ─────────────────────────────────────────────────────────────────────────────
 # Filter funnel counter
 # ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Filter funnel counter
+# ─────────────────────────────────────────────────────────────────────────────
 def _reset_filter_counts():
     counts = {
         "total_watchlist":  0,
-        "pre_filtered_out": 0,   # removed by bulk ticker pre-filter (A)
-        "checked":          0,   # entered deep-scan
-        "f2_rsi5m":         0,
-        "f3_rsi1h":         0,
-        "f4_ema":           0,
-        "f5_macd":          0,
-        "f6_sar":          0,
-        "f7_vol":          0,
-        "f8_pdz5m":          0,
-        "f9_pdz15m":         0,
+        "pre_filtered_out": 0,
+        "checked":          0,
+        # ── elimination counters (new F-order) ────────────────────────────────
+        "f2_pdz15m":        0,   # F2 — PDZ 15m
+        "f3_pdz5m":         0,   # F3 — PDZ 5m
+        "f4_rsi5m":         0,   # F4 — 5m RSI
+        "f5_rsi1h":         0,   # F5 — 1h RSI
+        "f6_ema":           0,   # F6 — EMA
+        "f7_macd":          0,   # F7 — MACD
+        "f8_sar":           0,   # F8 — SAR
+        "f9_vol":           0,   # F9 — Vol Spike
         "passed":           0,
+        "super_setup":      0,   # subset of passed — 15m Discount instant buys
         "errors":           0,
-        # ── per-stage symbol tracking ──────────────────────────────────────────
-        "pre_filter_passed_syms": [],   # coins that passed bulk pre-filter
-        "checked_syms":           [],   # coins that entered deep-scan
+        "scan_cfg":         {},
+        # ── per-stage symbol lists ─────────────────────────────────────────────
+        "pre_filter_passed_syms": [],
+        "checked_syms":           [],
         "f2_elim_syms":           [],
         "f3_elim_syms":           [],
         "f4_elim_syms":           [],
         "f5_elim_syms":           [],
-        "f6_elim_syms":          [],
-        "f7_elim_syms":          [],
-        "f8_elim_syms":          [],
-        "f9_elim_syms":          [],
+        "f6_elim_syms":           [],
+        "f7_elim_syms":           [],
+        "f8_elim_syms":           [],
+        "f9_elim_syms":           [],
         "passed_syms":            [],
+        "super_setup_syms":       [],
     }
     with _filter_lock:
         _filter_counts.clear()
@@ -657,7 +667,7 @@ def _reset_filter_counts():
     _b._bsc_filter_counts = _filter_counts
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Per-coin processing  (B + C applied here)
+# Per-coin processing
 # ─────────────────────────────────────────────────────────────────────────────
 def process(sym, cfg: dict):
     try:
@@ -665,23 +675,87 @@ def process(sym, cfg: dict):
             _filter_counts["checked"] = _filter_counts.get("checked", 0) + 1
             _filter_counts["checked_syms"].append(sym)
 
-        # ── C — Stage 1: Quick RSI + Resistance check (50 candles, 1 API call)
-        m5_quick    = get_klines(sym, "5m", 50)[:-1]
+        # ── Stage 1: Quick parallel fetch — 5m (entry/RSI) + 15m (PDZ) ───────
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_5m_q  = pool.submit(get_klines, sym, "5m",  50)
+            f_15m_q = pool.submit(get_klines, sym, "15m", 51)
+            m5_quick  = f_5m_q.result()[:-1]
+            m15_quick = f_15m_q.result()[:-1]
+
         closes_5m_q = [c["close"] for c in m5_quick]
         entry_q     = round(m5_quick[-1]["close"], 6)
 
+        # ── F2: PDZ 15m — checked FIRST (Super Setup possible) ───────────────
+        pdz_zone_15m   = "—"
+        is_super_setup = False
+        if cfg.get("use_pdz_15m", True):
+            pdz_pass_15m, pdz_zone_15m = calc_pdz_zone(m15_quick, entry_q)
+            if pdz_zone_15m == "Discount":
+                is_super_setup = True          # ⭐ skip all remaining filters
+            elif not pdz_pass_15m:
+                with _filter_lock:
+                    _filter_counts["f2_pdz15m"] = _filter_counts.get("f2_pdz15m", 0) + 1
+                    _filter_counts["f2_elim_syms"].append(sym)
+                return None
+            # else Band A/B passes — continue to F3
+
+        # ── SUPER SETUP — 15m Discount → instant trade, no further checks ─────
+        if is_super_setup:
+            tp      = round(entry_q * (1 + cfg["tp_pct"] / 100), 6)
+            sl      = round(entry_q * (1 - cfg["sl_pct"] / 100), 6)
+            sec     = SECTORS.get(sym, "Other")
+            max_lev = get_max_leverage(sym)
+            with _filter_lock:
+                _filter_counts["passed"]           = _filter_counts.get("passed", 0) + 1
+                _filter_counts["super_setup"]      = _filter_counts.get("super_setup", 0) + 1
+                _filter_counts["passed_syms"].append(sym)
+                _filter_counts["super_setup_syms"].append(sym)
+            return {
+                "id":             str(uuid.uuid4())[:8],
+                "timestamp":      dubai_now().isoformat(),
+                "symbol":         sym,
+                "entry":          entry_q,
+                "tp":             tp,
+                "sl":             sl,
+                "sector":         sec,
+                "status":         "open",
+                "close_price":    None,
+                "close_time":     None,
+                "max_lev":        max_lev,
+                "is_super_setup": True,
+                "criteria": {
+                    "rsi_5m": "—", "rsi_1h": "—",
+                    "ema_3m": "—", "ema_5m": "—", "ema_15m": "—",
+                    "macd_3m": "—", "macd_5m": "—", "macd_15m": "—",
+                    "sar_3m": "—", "sar_5m": "—", "sar_15m": "—",
+                    "vol_ratio": "—",
+                    "pdz_zone_5m":  "—",
+                    "pdz_zone_15m": pdz_zone_15m,
+                },
+            }
+
+        # ── F3: PDZ 5m ────────────────────────────────────────────────────────
+        pdz_zone_5m = "—"
+        if cfg.get("use_pdz_5m", True):
+            pdz_pass_5m, pdz_zone_5m = calc_pdz_zone(m5_quick, entry_q)
+            if not pdz_pass_5m:
+                with _filter_lock:
+                    _filter_counts["f3_pdz5m"] = _filter_counts.get("f3_pdz5m", 0) + 1
+                    _filter_counts["f3_elim_syms"].append(sym)
+                return None
+
+        # ── F4: Quick 5m RSI (still early — before full fetch) ────────────────
         rsi5_q = (calc_rsi_series(closes_5m_q) or [0])[-1]
         if cfg.get("use_rsi_5m", True) and rsi5_q < cfg["rsi_5m_min"]:
             with _filter_lock:
-                _filter_counts["f2_rsi5m"] = _filter_counts.get("f2_rsi5m",0)+1
-                _filter_counts["f2_elim_syms"].append(sym)
+                _filter_counts["f4_rsi5m"] = _filter_counts.get("f4_rsi5m", 0) + 1
+                _filter_counts["f4_elim_syms"].append(sym)
             return None
 
-        # ── B — Stage 2: Fetch all 4 timeframes IN PARALLEL (3 API calls saved)
-        # 5m full needed for EMA (configurable period); 1h needs only 19 candles
-        candle_limit_5m  = 210 if (cfg.get("use_ema_5m") or cfg.get("use_macd") or cfg.get("use_sar")) else 50
-        candle_limit_15m = 210 if (cfg.get("use_ema_15m")or cfg.get("use_macd") or cfg.get("use_sar")) else 50
-        candle_limit_3m  =  80 if (cfg.get("use_ema_3m") or cfg.get("use_macd") or cfg.get("use_sar")) else 30
+        # ── Stage 2: Full parallel fetch (EMA/MACD/SAR/RSI1h need more data) ─
+        candle_limit_5m  = 210 if (cfg.get("use_ema_5m")  or cfg.get("use_macd") or cfg.get("use_sar")) else 51
+        candle_limit_15m = 210 if (cfg.get("use_ema_15m") or cfg.get("use_macd") or cfg.get("use_sar")) else 51
+        candle_limit_3m  =  80 if (cfg.get("use_ema_3m")  or cfg.get("use_macd") or cfg.get("use_sar")) else 30
 
         with ThreadPoolExecutor(max_workers=4) as pool:
             f_5m  = pool.submit(get_klines, sym, "5m",  candle_limit_5m)
@@ -699,51 +773,51 @@ def process(sym, cfg: dict):
         closes_1h  = [c["close"] for c in m1h_candles]
         entry      = round(m5[-1]["close"], 6)
 
-        # ── F7: 1h RSI ────────────────────────────────────────────────────────
+        # ── F5: 1h RSI ────────────────────────────────────────────────────────
         rsi1h = (calc_rsi_series(closes_1h) or [0])[-1]
         if cfg.get("use_rsi_1h", True) and \
                 not (cfg["rsi_1h_min"] <= rsi1h <= cfg["rsi_1h_max"]):
             with _filter_lock:
-                _filter_counts["f3_rsi1h"] = _filter_counts.get("f3_rsi1h",0)+1
-                _filter_counts["f3_elim_syms"].append(sym)
+                _filter_counts["f5_rsi1h"] = _filter_counts.get("f5_rsi1h", 0) + 1
+                _filter_counts["f5_elim_syms"].append(sym)
             return None
 
-        # ── F8: EMA_Selection — capture actual EMA value at entry ─────────────
+        # ── F6: EMA ───────────────────────────────────────────────────────────
         ema_3m_val = ema_5m_val = ema_15m_val = None
         if cfg.get("use_ema_3m"):
             ema = calc_ema(closes_3m, max(2, int(cfg.get("ema_period_3m", 12))))
             if not ema or entry < ema[-1]:
                 with _filter_lock:
-                    _filter_counts["f4_ema"] = _filter_counts.get("f4_ema",0)+1
-                    _filter_counts["f4_elim_syms"].append(sym)
+                    _filter_counts["f6_ema"] = _filter_counts.get("f6_ema", 0) + 1
+                    _filter_counts["f6_elim_syms"].append(sym)
                 return None
             ema_3m_val = round(ema[-1], 6)
         if cfg.get("use_ema_5m"):
             ema = calc_ema(closes_5m, max(2, int(cfg.get("ema_period_5m", 12))))
             if not ema or entry < ema[-1]:
                 with _filter_lock:
-                    _filter_counts["f4_ema"] = _filter_counts.get("f4_ema",0)+1
-                    _filter_counts["f4_elim_syms"].append(sym)
+                    _filter_counts["f6_ema"] = _filter_counts.get("f6_ema", 0) + 1
+                    _filter_counts["f6_elim_syms"].append(sym)
                 return None
             ema_5m_val = round(ema[-1], 6)
         if cfg.get("use_ema_15m"):
             ema = calc_ema(closes_15m, max(2, int(cfg.get("ema_period_15m", 12))))
             if not ema or entry < ema[-1]:
                 with _filter_lock:
-                    _filter_counts["f4_ema"] = _filter_counts.get("f4_ema",0)+1
-                    _filter_counts["f4_elim_syms"].append(sym)
+                    _filter_counts["f6_ema"] = _filter_counts.get("f6_ema", 0) + 1
+                    _filter_counts["f6_elim_syms"].append(sym)
                 return None
             ema_15m_val = round(ema[-1], 6)
 
-        # ── F9: MACD dark-green — capture MACD line values ───────────────────
+        # ── F7: MACD dark-green ───────────────────────────────────────────────
         macd_3m_val = macd_5m_val = macd_15m_val = None
         if cfg.get("use_macd"):
             if not (macd_bullish(closes_3m) and
                     macd_bullish(closes_5m)  and
                     macd_bullish(closes_15m)):
                 with _filter_lock:
-                    _filter_counts["f5_macd"] = _filter_counts.get("f5_macd",0)+1
-                    _filter_counts["f5_elim_syms"].append(sym)
+                    _filter_counts["f7_macd"] = _filter_counts.get("f7_macd", 0) + 1
+                    _filter_counts["f7_elim_syms"].append(sym)
                 return None
             ml3,  _, _ = calc_macd(closes_3m)
             ml5,  _, _ = calc_macd(closes_5m)
@@ -752,7 +826,7 @@ def process(sym, cfg: dict):
             if ml5:  macd_5m_val  = round(ml5[-1],  8)
             if ml15: macd_15m_val = round(ml15[-1], 8)
 
-        # ── F10: Parabolic SAR — capture SAR value at entry ──────────────────
+        # ── F8: Parabolic SAR ─────────────────────────────────────────────────
         sar_3m_val = sar_5m_val = sar_15m_val = None
         if cfg.get("use_sar"):
             sar_3m  = calc_parabolic_sar(m3_candles)
@@ -762,14 +836,14 @@ def process(sym, cfg: dict):
                     sar_5m  and sar_5m[-1][1]  and
                     sar_15m and sar_15m[-1][1]):
                 with _filter_lock:
-                    _filter_counts["f6_sar"] = _filter_counts.get("f6_sar",0)+1
-                    _filter_counts["f6_elim_syms"].append(sym)
+                    _filter_counts["f8_sar"] = _filter_counts.get("f8_sar", 0) + 1
+                    _filter_counts["f8_elim_syms"].append(sym)
                 return None
             sar_3m_val  = round(sar_3m[-1][0],  6)
             sar_5m_val  = round(sar_5m[-1][0],  6)
             sar_15m_val = round(sar_15m[-1][0], 6)
 
-        # ── F11: Volume spike — capture vol ratio ─────────────────────────────
+        # ── F9: Volume Spike ──────────────────────────────────────────────────
         vol_ratio = None
         if cfg.get("use_vol_spike"):
             lookback = max(2, int(cfg.get("vol_spike_lookback", 20)))
@@ -777,86 +851,67 @@ def process(sym, cfg: dict):
             vols_15m = [c["volume"] for c in m15]
             if len(vols_15m) >= lookback + 1:
                 window   = vols_15m[-(lookback+1):-1]
-                avg_vol  = sum(window)/len(window)
+                avg_vol  = sum(window) / len(window)
                 if avg_vol <= 0 or vols_15m[-1] < mult * avg_vol:
                     with _filter_lock:
-                        _filter_counts["f7_vol"] = _filter_counts.get("f7_vol",0)+1
-                        _filter_counts["f7_elim_syms"].append(sym)
+                        _filter_counts["f9_vol"] = _filter_counts.get("f9_vol", 0) + 1
+                        _filter_counts["f9_elim_syms"].append(sym)
                     return None
                 vol_ratio = round(vols_15m[-1] / avg_vol, 2) if avg_vol > 0 else None
 
-        # ── F8: PDZ — Premium / Discount / Equilibrium zone (5m) ────────────
-        pdz_zone_5m = "—"
-        if cfg.get("use_pdz_5m", True):
-            pdz_pass_5m, pdz_zone_5m = calc_pdz_zone(m5, entry)
-            if not pdz_pass_5m:
-                with _filter_lock:
-                    _filter_counts["f8_pdz5m"] = _filter_counts.get("f8_pdz5m", 0) + 1
-                    _filter_counts["f8_elim_syms"].append(sym)
-                return None
-
-        # ── F9: PDZ — Premium / Discount / Equilibrium zone (15m) ───────────
-        pdz_zone_15m = "—"
-        if cfg.get("use_pdz_15m", True):
-            pdz_pass_15m, pdz_zone_15m = calc_pdz_zone(m15, entry)
-            if not pdz_pass_15m:
-                with _filter_lock:
-                    _filter_counts["f9_pdz15m"] = _filter_counts.get("f9_pdz15m", 0) + 1
-                    _filter_counts["f9_elim_syms"].append(sym)
-                return None
-
-        tp      = round(entry * (1 + cfg["tp_pct"]/100), 6)
-        sl      = round(entry * (1 - cfg["sl_pct"]/100), 6)
+        # ── All filters passed ────────────────────────────────────────────────
+        tp      = round(entry * (1 + cfg["tp_pct"] / 100), 6)
+        sl      = round(entry * (1 - cfg["sl_pct"] / 100), 6)
         sec     = SECTORS.get(sym, "Other")
         max_lev = get_max_leverage(sym)
 
         with _filter_lock:
-            _filter_counts["passed"] = _filter_counts.get("passed",0)+1
+            _filter_counts["passed"] = _filter_counts.get("passed", 0) + 1
             _filter_counts["passed_syms"].append(sym)
 
-        rsi5 = (calc_rsi_series(closes_5m) or [rsi5_q])[-1]   # use full-set RSI if available
+        rsi5 = (calc_rsi_series(closes_5m) or [rsi5_q])[-1]
         criteria = {
-            "rsi_5m":    round(rsi5,  1),
-            "rsi_1h":    round(rsi1h, 1),
-            "ema_3m":    ema_3m_val  if cfg.get("use_ema_3m")    else "—",
-            "ema_5m":    ema_5m_val  if cfg.get("use_ema_5m")    else "—",
-            "ema_15m":   ema_15m_val if cfg.get("use_ema_15m")   else "—",
-            "macd_3m":   macd_3m_val  if cfg.get("use_macd")     else "—",
-            "macd_5m":   macd_5m_val  if cfg.get("use_macd")     else "—",
-            "macd_15m":  macd_15m_val if cfg.get("use_macd")     else "—",
-            "sar_3m":    sar_3m_val   if cfg.get("use_sar")      else "—",
-            "sar_5m":    sar_5m_val   if cfg.get("use_sar")      else "—",
-            "sar_15m":   sar_15m_val  if cfg.get("use_sar")      else "—",
-            "vol_ratio":    vol_ratio     if cfg.get("use_vol_spike")    else "—",
+            "rsi_5m":       round(rsi5,  1),
+            "rsi_1h":       round(rsi1h, 1),
+            "ema_3m":       ema_3m_val  if cfg.get("use_ema_3m")    else "—",
+            "ema_5m":       ema_5m_val  if cfg.get("use_ema_5m")    else "—",
+            "ema_15m":      ema_15m_val if cfg.get("use_ema_15m")   else "—",
+            "macd_3m":      macd_3m_val  if cfg.get("use_macd")     else "—",
+            "macd_5m":      macd_5m_val  if cfg.get("use_macd")     else "—",
+            "macd_15m":     macd_15m_val if cfg.get("use_macd")     else "—",
+            "sar_3m":       sar_3m_val   if cfg.get("use_sar")      else "—",
+            "sar_5m":       sar_5m_val   if cfg.get("use_sar")      else "—",
+            "sar_15m":      sar_15m_val  if cfg.get("use_sar")      else "—",
+            "vol_ratio":    vol_ratio    if cfg.get("use_vol_spike") else "—",
             "pdz_zone_5m":  pdz_zone_5m  if cfg.get("use_pdz_5m",  True) else "—",
             "pdz_zone_15m": pdz_zone_15m if cfg.get("use_pdz_15m", True) else "—",
         }
 
         return {
-            "id":          str(uuid.uuid4())[:8],
-            "timestamp":   dubai_now().isoformat(),
-            "symbol":      sym,
-            "entry":       entry,
-            "tp":          tp,
-            "sl":          sl,
-            "sector":      sec,
-            "status":      "open",
-            "close_price": None,
-            "close_time":  None,
-            "max_lev":     max_lev,
-            "criteria":    criteria,
+            "id":             str(uuid.uuid4())[:8],
+            "timestamp":      dubai_now().isoformat(),
+            "symbol":         sym,
+            "entry":          entry,
+            "tp":             tp,
+            "sl":             sl,
+            "sector":         sec,
+            "status":         "open",
+            "close_price":    None,
+            "close_time":     None,
+            "max_lev":        max_lev,
+            "is_super_setup": False,
+            "criteria":       criteria,
         }
 
     except Exception:
         with _filter_lock:
-            _filter_counts["errors"] = _filter_counts.get("errors",0)+1
+            _filter_counts["errors"] = _filter_counts.get("errors", 0) + 1
         return "error"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Scan orchestrator  (A + D wired here)
-# ─────────────────────────────────────────────────────────────────────────────
 def scan(cfg: dict):
     _reset_filter_counts()
+    with _filter_lock:                          # store config used for this scan
+        _filter_counts["scan_cfg"] = dict(cfg)
 
     # D — cached symbol list (one instrument API call max every 6 h)
     symbols = get_symbols_cached(cfg["watchlist"])
@@ -952,8 +1007,11 @@ def _bg_loop():
             _b._bsc_last_error = ""
         except Exception as e:
             _b._bsc_last_error = str(e)
-        elapsed = time.time() - t0
-        time.sleep(max(0, cfg["loop_minutes"]*60 - elapsed))
+        elapsed   = time.time() - t0
+        sleep_sec = max(0, cfg["loop_minutes"] * 60 - elapsed)
+        # Wait for sleep_sec, but wake immediately if Save & Apply triggers rescan
+        _rescan_event.wait(timeout=sleep_sec)
+        _rescan_event.clear()
 
 def _ensure_scanner():
     if _b._bsc_thread is None or not _b._bsc_thread.is_alive():
@@ -1010,12 +1068,12 @@ with st.sidebar:
     st.divider()
 
     # ── F2: 5m RSI ─────────────────────────────────────────────────────────────
-    st.markdown("**📈 F2 — 5m RSI**")
+    st.markdown("**📈 F4 — 5m RSI**")
     new_use_rsi_5m = st.checkbox(
-        "Enable F2 — 5m RSI",
+        "Enable F4 — 5m RSI",
         value=bool(_snap_cfg.get("use_rsi_5m", True)), key="cfg_use_rsi_5m",
         help=(
-            "F2 — 5-Minute RSI Filter\n\n"
+            "F4 — 5-Minute RSI Filter\n\n"
             "RSI(14) on the last 50 × 5m candles must be ≥ the minimum threshold.\n"
             "This is a fast Stage-1 exit — coins failing here skip all further fetches.\n\n"
             "A low RSI signals weak short-term momentum — not suitable for a long entry."
@@ -1026,12 +1084,12 @@ with st.sidebar:
     st.divider()
 
     # ── F3: 1h RSI ─────────────────────────────────────────────────────────────
-    st.markdown("**📈 F3 — 1h RSI**")
+    st.markdown("**📈 F5 — 1h RSI**")
     new_use_rsi_1h = st.checkbox(
-        "Enable F3 — 1h RSI",
+        "Enable F5 — 1h RSI",
         value=bool(_snap_cfg.get("use_rsi_1h", True)), key="cfg_use_rsi_1h",
         help=(
-            "F3 — 1-Hour RSI Filter\n\n"
+            "F5 — 1-Hour RSI Filter\n\n"
             "RSI(14) on the 1h timeframe must fall within the Min–Max band.\n\n"
             "Min: ensures real hourly momentum exists (coin is not dead).\n"
             "Max: avoids entries when the coin is already overbought on the higher timeframe."
@@ -1046,9 +1104,9 @@ with st.sidebar:
     st.divider()
 
     # ── F4: EMA Selection ──────────────────────────────────────────────────────
-    st.markdown("**📉 F4 — EMA Selection** (price must be above EMA)",
+    st.markdown("**📉 F6 — EMA Selection** (price must be above EMA)",
                 help=(
-                    "F4 — EMA Selection Filter\n\n"
+                    "F6 — EMA Selection Filter\n\n"
                     "Entry price must be ABOVE the chosen EMA on each enabled timeframe.\n"
                     "Being above the EMA confirms the short-term trend is bullish.\n\n"
                     "Each timeframe (3m, 5m, 15m) is independently toggleable.\n"
@@ -1075,12 +1133,12 @@ with st.sidebar:
     st.divider()
 
     # ── F5: MACD ───────────────────────────────────────────────────────────────
-    st.markdown("**📊 F5 — MACD** (dark 🟢 histogram, 3m·5m·15m)")
+    st.markdown("**📊 F7 — MACD** (dark 🟢 histogram, 3m·5m·15m)")
     new_use_macd = st.checkbox(
-        "Enable F5 — MACD filter",
+        "Enable F7 — MACD filter",
         value=bool(_snap_cfg.get("use_macd",True)), key="cfg_use_macd",
         help=(
-            "F5 — MACD Dark Green Histogram Filter\n\n"
+            "F7 — MACD Dark Green Histogram Filter\n\n"
             "All of the following must be true on 3m, 5m, AND 15m simultaneously:\n"
             "  • MACD line > 0\n"
             "  • Signal line > 0\n"
@@ -1092,12 +1150,12 @@ with st.sidebar:
     st.divider()
 
     # ── F6: Parabolic SAR ──────────────────────────────────────────────────────
-    st.markdown("**🪂 F6 — Parabolic SAR** (3m·5m·15m)")
+    st.markdown("**🪂 F8 — Parabolic SAR** (3m·5m·15m)")
     new_use_sar = st.checkbox(
-        "Enable F6 — SAR filter",
+        "Enable F8 — SAR filter",
         value=bool(_snap_cfg.get("use_sar",True)), key="cfg_use_sar",
         help=(
-            "F6 — Parabolic SAR Filter\n\n"
+            "F8 — Parabolic SAR Filter\n\n"
             "SAR must be positioned BELOW current price on 3m, 5m, AND 15m.\n\n"
             "SAR below price = bullish mode.\n"
             "If any timeframe has SAR above price, the trend is bearish → coin rejected."
@@ -1106,12 +1164,12 @@ with st.sidebar:
     st.divider()
 
     # ── F7: Volume Spike ───────────────────────────────────────────────────────
-    st.markdown("**📦 F7 — Volume Spike** (15m)")
+    st.markdown("**📦 F9 — Volume Spike** (15m)")
     new_use_vol_spike = st.checkbox(
-        "Enable F7 — Volume Spike",
+        "Enable F9 — Volume Spike",
         value=bool(_snap_cfg.get("use_vol_spike",False)), key="cfg_use_vol_spike",
         help=(
-            "F7 — Volume Spike Filter (disabled by default)\n\n"
+            "F9 — Volume Spike Filter (disabled by default)\n\n"
             "Most recent 15m candle volume must be ≥ Mult × average of prior Lookback candles.\n\n"
             "Confirms strong buying pressure behind the move.\n"
             "Mult: spike multiplier (e.g. 2.0 = must be 2× average).\n"
@@ -1127,12 +1185,12 @@ with st.sidebar:
     st.divider()
 
     # ── F8: PDZ 5m ─────────────────────────────────────────────────────────────
-    st.markdown("**🎯 F8 — PDZ Zones** (5m)")
+    st.markdown("**🎯 F3 — PDZ Zones** (5m)")
     new_use_pdz_5m = st.checkbox(
-        "Enable F8 — PDZ Filter (5m)",
+        "Enable F3 — PDZ Filter (5m)",
         value=bool(_snap_cfg.get("use_pdz_5m", True)), key="cfg_use_pdz_5m",
         help=(
-            "F8 — Premium / Discount / Equilibrium Zone Filter (5m)\n\n"
+            "F3 — Premium / Discount / Equilibrium Zone Filter (5m)\n\n"
             "DZSAFM Smart Money zones on last 50 × 5m candles.\n"
             "Zones from swing High (H) and Low (L):\n"
             "  Premium bottom = 0.95×H + 0.05×L\n"
@@ -1146,14 +1204,14 @@ with st.sidebar:
     st.divider()
 
     # ── F9: PDZ 15m ────────────────────────────────────────────────────────────
-    st.markdown("**🎯 F9 — PDZ Zones** (15m)")
+    st.markdown("**🎯 F2 — PDZ Zones** (15m)")
     new_use_pdz_15m = st.checkbox(
-        "Enable F9 — PDZ Filter (15m)",
+        "Enable F2 — PDZ Filter (15m)",
         value=bool(_snap_cfg.get("use_pdz_15m", True)), key="cfg_use_pdz_15m",
         help=(
-            "F9 — Premium / Discount / Equilibrium Zone Filter (15m)\n\n"
-            "Same DZSAFM zone logic as F8, applied to last 50 × 15m candles.\n\n"
-            "Passing both F8 (5m) and F9 (15m) confirms the coin is in a\n"
+            "F2 — Premium / Discount / Equilibrium Zone Filter (15m)\n\n"
+            "Same DZSAFM zone logic as F3, applied to last 50 × 15m candles.\n\n"
+            "Passing both F3 (5m) and F2 (15m) confirms the coin is in a\n"
             "favourable Smart Money zone on both timeframes simultaneously.\n\n"
             "✅ Qualifies: Discount zone · Band A/B with ≥1.5% room to next zone\n"
             "❌ Rejected:  Equilibrium (indecision) · Premium (no upward room)"
@@ -1237,7 +1295,8 @@ with st.sidebar:
         # Invalidate symbol cache if watchlist changed
         if new_wl != _snap_cfg.get("watchlist", []):
             _b._bsc_symbol_cache["fetched_at"] = 0
-        st.success(f"✅ Saved — {len(new_wl)} coins"); st.rerun()
+        _b._bsc_rescan_event.set()   # wake bg thread immediately — no waiting for next cycle
+        st.success(f"✅ Saved — {len(new_wl)} coins — rescanning now…"); st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN AREA
@@ -1287,8 +1346,8 @@ if _snap_cfg.get("use_macd"):      badges.append("📊 MACD 🟢↑ 3m·5m·15m"
 if _snap_cfg.get("use_sar"):       badges.append("🪂 SAR 3m·5m·15m")
 if _snap_cfg.get("use_vol_spike"): badges.append(
     f"📦 Vol ≥{_snap_cfg.get('vol_spike_mult',2.0)}× / {_snap_cfg.get('vol_spike_lookback',20)} 15m")
-if _snap_cfg.get("use_pdz_5m",  True):  badges.append("🎯 F8 — PDZ Zones (5m)")
-if _snap_cfg.get("use_pdz_15m", True):  badges.append("🎯 F9 — PDZ Zones (15m)")
+if _snap_cfg.get("use_pdz_5m",  True):  badges.append("🎯 F3 — PDZ Zones (5m)")
+if _snap_cfg.get("use_pdz_15m", True):  badges.append("🎯 F2 — PDZ Zones (15m)")
 st.markdown("**Active Filters:**")
 st.caption("  |  ".join(badges) if badges else "No advanced filters enabled")
 st.divider()
@@ -1341,11 +1400,13 @@ if filtered_sorted:
             f"• PDZ 5m    : {pdz_5m_val}\n"
             f"• PDZ 15m   : {pdz_15m_val}"
         ) if crit else "—"
-        max_lev   = s.get("max_lev", get_max_leverage(s.get("symbol","")))
-        sl_reason = analyze_sl_reason(s) if status=="sl_hit" else "—"
+        max_lev    = s.get("max_lev", get_max_leverage(s.get("symbol","")))
+        sl_reason  = analyze_sl_reason(s) if status=="sl_hit" else "—"
+        setup_type = "⭐ Super" if s.get("is_super_setup") else "Normal"
         rows.append({
             "Time (GST)":     ts_str,
             "Symbol":         s.get("symbol",""),
+            "Setup":          setup_type,
             "Sector":         s.get("sector","Other"),
             "Entry":          s.get("entry",""),
             "TP":             s.get("tp",""),
@@ -1359,6 +1420,7 @@ if filtered_sorted:
         })
     st.dataframe(rows, use_container_width=True, hide_index=True,
                  column_config={
+                     "Setup":          st.column_config.TextColumn(width="small"),
                      "Entry":          st.column_config.NumberColumn(format="%.6f"),
                      "TP":             st.column_config.NumberColumn(format="%.6f"),
                      "SL":             st.column_config.NumberColumn(format="%.6f"),
@@ -1422,46 +1484,54 @@ if fc.get("total_watchlist", 0) > 0:
         pre_out_n = fc.get("pre_filtered_out", 0)
         after_pre = total - pre_out_n
         checked   = fc.get("checked", after_pre)
-        after_f2  = checked   - fc.get("f2_rsi5m",0)
-        after_f3  = after_f2  - fc.get("f3_rsi1h",0)
-        after_f4  = after_f3  - fc.get("f4_ema",0)
-        after_f5  = after_f4  - fc.get("f5_macd",0)
-        after_f6 = after_f5  - fc.get("f6_sar",0)
-        after_f7 = after_f6 - fc.get("f7_vol",0)
-        after_f8 = after_f7 - fc.get("f8_pdz5m", 0)
-        after_f9 = after_f8 - fc.get("f9_pdz15m", 0)
+        after_f2  = checked   - fc.get("f2_pdz15m", 0)
+        after_f3  = after_f2  - fc.get("f3_pdz5m",  0)
+        after_f4  = after_f3  - fc.get("f4_rsi5m",  0)
+        after_f5  = after_f4  - fc.get("f5_rsi1h",  0)
+        after_f6  = after_f5  - fc.get("f6_ema",    0)
+        after_f7  = after_f6  - fc.get("f7_macd",   0)
+        after_f8  = after_f7  - fc.get("f8_sar",    0)
+        after_f9  = after_f8  - fc.get("f9_vol",    0)
+
+        # Use the config that was ACTIVE during the last scan for labels
+        # This ensures labels always match the counts (no mismatch after config changes)
+        sc = fc.get("scan_cfg") or _snap_cfg   # fallback to current cfg on first run
+
+        if sc is not _snap_cfg and sc != _snap_cfg:
+            st.caption("⚠️ Config changed since last scan — funnel reflects the previous settings. "
+                       "Rescan is in progress with the new config.")
 
         def _lbl(enabled, on_str, off_str="off"):
             return on_str if enabled else f"{on_str.split('—')[0].strip()} ({off_str})"
 
-        pre_lbl    = "⚡ After Bulk Pre-filter" if _snap_cfg.get("use_pre_filter", True) else "⚡ Pre-filter (disabled)"
-        f2_lbl     = f"F2 — 5m RSI ≥{_snap_cfg.get('rsi_5m_min',30)}" if _snap_cfg.get("use_rsi_5m", True) else "F2 — 5m RSI (off)"
-        f3_lbl     = (f"F3 — 1h RSI {_snap_cfg.get('rsi_1h_min',30)}–{_snap_cfg.get('rsi_1h_max',95)}"
-                      if _snap_cfg.get("use_rsi_1h", True) else "F3 — 1h RSI (off)")
+        pre_lbl    = "⚡ After Bulk Pre-filter" if sc.get("use_pre_filter", True) else "⚡ Pre-filter (disabled)"
+        pdz15m_lbl = "F2 — PDZ Zones (15m)" if sc.get("use_pdz_15m", True) else "F2 — PDZ 15m (off)"
+        pdz5m_lbl  = "F3 — PDZ Zones (5m)"  if sc.get("use_pdz_5m",  True) else "F3 — PDZ 5m (off)"
+        f4_lbl     = f"F4 — 5m RSI ≥{sc.get('rsi_5m_min',30)}" if sc.get("use_rsi_5m", True) else "F4 — 5m RSI (off)"
+        f5_lbl     = (f"F5 — 1h RSI {sc.get('rsi_1h_min',30)}–{sc.get('rsi_1h_max',95)}"
+                      if sc.get("use_rsi_1h", True) else "F5 — 1h RSI (off)")
         ema_parts = []
-        if _snap_cfg.get("use_ema_3m"):  ema_parts.append(f"3m EMA{_snap_cfg.get('ema_period_3m',12)}")
-        if _snap_cfg.get("use_ema_5m"):  ema_parts.append(f"5m EMA{_snap_cfg.get('ema_period_5m',12)}")
-        if _snap_cfg.get("use_ema_15m"): ema_parts.append(f"15m EMA{_snap_cfg.get('ema_period_15m',12)}")
-        ema_lbl    = ("F4 — EMA (" + (" · ".join(ema_parts)) + ")") if ema_parts else "F4 — EMA (off)"
-        macd_lbl   = "F5 — MACD 🟢↑ 3m·5m·15m" if _snap_cfg.get("use_macd")      else "F5 — MACD (off)"
-        sar_lbl    = "F6 — SAR 3m·5m·15m"       if _snap_cfg.get("use_sar")       else "F6 — SAR (off)"
-        vol_lbl    = (f"F7 — Vol ≥{_snap_cfg.get('vol_spike_mult',2.0)}× / {_snap_cfg.get('vol_spike_lookback',20)} 15m"
-                      if _snap_cfg.get("use_vol_spike") else "F7 — Vol (off)")
-        pdz5m_lbl  = "F8 — PDZ Zones (5m)"  if _snap_cfg.get("use_pdz_5m",  True) else "F8 — PDZ 5m (off)"
-        pdz15m_lbl = "F9 — PDZ Zones (15m)" if _snap_cfg.get("use_pdz_15m", True) else "F9 — PDZ 15m (off)"
+        if sc.get("use_ema_3m"):  ema_parts.append(f"3m EMA{sc.get('ema_period_3m',12)}")
+        if sc.get("use_ema_5m"):  ema_parts.append(f"5m EMA{sc.get('ema_period_5m',12)}")
+        if sc.get("use_ema_15m"): ema_parts.append(f"15m EMA{sc.get('ema_period_15m',12)}")
+        ema_lbl    = ("F6 — EMA (" + (" · ".join(ema_parts)) + ")") if ema_parts else "F6 — EMA (off)"
+        macd_lbl   = "F7 — MACD \U0001f7e2\u2191 3m\xb75m\xb715m" if sc.get("use_macd")      else "F7 — MACD (off)"
+        sar_lbl    = "F8 — SAR 3m\xb75m\xb715m"                    if sc.get("use_sar")       else "F8 — SAR (off)"
+        vol_lbl    = (f"F9 — Vol \u2265{sc.get('vol_spike_mult',2.0)}\xd7 / {sc.get('vol_spike_lookback',20)} 15m"
+                      if sc.get("use_vol_spike") else "F9 — Vol (off)")
 
         funnel_data = [
-            (f"Watchlist ({total})",   total),
-            (pre_lbl,                  after_pre),
-            ("Entered Deep Scan",      checked),
-            (f"After {f2_lbl}",        after_f2),
-            (f"After {f3_lbl}",        after_f3),
-            (f"After {ema_lbl}",       after_f4),
-            (f"After {macd_lbl}",      after_f5),
-            (f"After {sar_lbl}",       after_f6),
-            (f"After {vol_lbl}",       after_f7),
-            (f"After {pdz5m_lbl}",     after_f8),
-            (f"After {pdz15m_lbl}",    after_f9),
+            (f"Watchlist ({total})",      total),
+            (pre_lbl,                     after_pre),
+            ("Entered Deep Scan",         checked),
+            (f"After {pdz15m_lbl}",       after_f2),
+            (f"After {pdz5m_lbl}",        after_f3),
+            (f"After {f4_lbl}",           after_f4),
+            (f"After {f5_lbl}",           after_f5),
+            (f"After {ema_lbl}",          after_f6),
+            (f"After {macd_lbl}",         after_f7),
+            (f"After {sar_lbl}",          after_f8),
+            (f"After {vol_lbl}",          after_f9),
         ]
         fig_funnel = go.Figure(go.Funnel(
             y=[d[0] for d in funnel_data],
@@ -1478,6 +1548,9 @@ if fc.get("total_watchlist", 0) > 0:
         col_a.metric("Pre-filtered out ⚡", pre_out_n, help="Removed cheaply — no candle API calls used")
         col_b.metric("Deep scanned 🔬",     checked,   help="Received full multi-timeframe candle analysis")
         col_c.metric("Errors",              fc.get("errors",0))
+        super_n = fc.get("super_setup", 0)
+        if super_n:
+            st.success(f"⭐ {super_n} Super Setup(s) this cycle — 15m Discount zone instant buy!")
 
         # ── Qualified coins table — one row per filter stage ────────────────────
         st.markdown("#### 🪙 Qualified Coins at Each Stage")
@@ -1509,16 +1582,16 @@ if fc.get("total_watchlist", 0) > 0:
             return ", ".join(sorted(s)) if s else "—"
 
         stage_rows = [
-            ("⚡ After Bulk Pre-filter",   len(_pre),      _coin_str(_pre)),
-            ("🔬 Entered Deep Scan",    len(_chk),      _coin_str(_chk)),
-            (f"After {f2_lbl}",                len(_after_f2), _coin_str(_after_f2)),
-            (f"After {f3_lbl}",                len(_after_f3), _coin_str(_after_f3)),
-            (f"After {ema_lbl}",               len(_after_f4), _coin_str(_after_f4)),
-            (f"After {macd_lbl}",              len(_after_f5), _coin_str(_after_f5)),
-            (f"After {sar_lbl}",               len(_after_f6), _coin_str(_after_f6)),
-            (f"After {vol_lbl}",               len(_after_f7), _coin_str(_after_f7)),
-            (f"After {pdz5m_lbl}",             len(_after_f8), _coin_str(_after_f8)),
-            (f"After {pdz15m_lbl}",            len(_after_f9), _coin_str(_after_f9)),
+            ("⚡ After Bulk Pre-filter",      len(_pre),      _coin_str(_pre)),
+            ("🔬 Entered Deep Scan",       len(_chk),      _coin_str(_chk)),
+            (f"After {pdz15m_lbl}",               len(_after_f2), _coin_str(_after_f2)),
+            (f"After {pdz5m_lbl}",                len(_after_f3), _coin_str(_after_f3)),
+            (f"After {f4_lbl}",                   len(_after_f4), _coin_str(_after_f4)),
+            (f"After {f5_lbl}",                   len(_after_f5), _coin_str(_after_f5)),
+            (f"After {ema_lbl}",                  len(_after_f6), _coin_str(_after_f6)),
+            (f"After {macd_lbl}",                 len(_after_f7), _coin_str(_after_f7)),
+            (f"After {sar_lbl}",                  len(_after_f8), _coin_str(_after_f8)),
+            (f"After {vol_lbl}",                  len(_after_f9), _coin_str(_after_f9)),
         ]
 
         st.dataframe(
