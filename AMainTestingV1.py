@@ -1009,10 +1009,19 @@ def _bg_loop():
                           and s.get("status") in ("tp_hit", "sl_hit")
                           and datetime.fromisoformat(s["close_time"].replace("Z","+00:00")) >= cutoff}
                 active = {s["symbol"] for s in _b._bsc_log["signals"] if s["status"]=="open"}
+                _new_sig_syms      = [s["symbol"] for s in new_sigs]
+                _blocked_active    = sorted(active  & set(_new_sig_syms))
+                _blocked_cooldown  = sorted(cooled  & set(_new_sig_syms))
                 skip   = cooled | active
+                _added_syms = []
                 for sig in new_sigs:
                     if sig["symbol"] not in skip:
-                        _b._bsc_log["signals"].append(sig); skip.add(sig["symbol"])
+                        _b._bsc_log["signals"].append(sig)
+                        skip.add(sig["symbol"])
+                        _added_syms.append(sig["symbol"])
+                _filter_counts["new_signal_syms"]         = _added_syms
+                _filter_counts["blocked_by_active_syms"]  = _blocked_active
+                _filter_counts["blocked_by_cooldown_syms"]= _blocked_cooldown
                 elapsed = time.time() - t0
                 _b._bsc_log["health"].update(
                     total_cycles         = _b._bsc_log["health"].get("total_cycles",0)+1,
@@ -1601,6 +1610,10 @@ if fc.get("total_watchlist", 0) > 0:
         def _coin_str(s: set) -> str:
             return ", ".join(sorted(s)) if s else "—"
 
+        _new_sig_s    = set(fc.get("new_signal_syms",          []))
+        _blk_active_s = set(fc.get("blocked_by_active_syms",  []))
+        _blk_cool_s   = set(fc.get("blocked_by_cooldown_syms",[]))
+
         stage_rows = [
             ("⚡ After Bulk Pre-filter",      len(_pre),      _coin_str(_pre)),
             ("🔬 Entered Deep Scan",       len(_chk),      _coin_str(_chk)),
@@ -1612,6 +1625,9 @@ if fc.get("total_watchlist", 0) > 0:
             (f"After {macd_lbl}",                 len(_after_f7), _coin_str(_after_f7)),
             (f"After {sar_lbl}",                  len(_after_f8), _coin_str(_after_f8)),
             (f"After {vol_lbl}",                  len(_after_f9), _coin_str(_after_f9)),
+            ("🔵 Blocked — already Open trade",   len(_blk_active_s), _coin_str(_blk_active_s)),
+            ("🟡 Blocked — Cooldown active",       len(_blk_cool_s),   _coin_str(_blk_cool_s)),
+            ("✅ New Signals Fired",               len(_new_sig_s),    _coin_str(_new_sig_s)),
         ]
 
         st.dataframe(
